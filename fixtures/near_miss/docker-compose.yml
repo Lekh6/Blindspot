@@ -1,0 +1,10 @@
+services:
+  orders:
+    image: orders:latest
+    environment:
+      PORT: "8000"
+
+  reports:
+    image: reports:latest
+    environment:
+      PORT: "9000"

@@ -1,0 +1,13 @@
+services:
+  orders:
+    image: orders:latest
+    volumes:
+      - shared-data:/data
+
+  reports:
+    image: reports:latest
+    volumes:
+      - shared-data:/data
+
+volumes:
+  shared-data:

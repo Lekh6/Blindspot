@@ -1,0 +1,17 @@
+services:
+  orders:
+    image: orders:latest
+    environment:
+      DB_HOST: shared-db
+      DB_NAME: orders
+
+  reports:
+    image: reports:latest
+    environment:
+      DB_HOST: shared-db
+      DB_NAME: orders
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: orders
