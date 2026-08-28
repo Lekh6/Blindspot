@@ -78,6 +78,51 @@
 - **Context:** User requested Muse Spark 1.2 free as startup default.
 - **Consequence:** All sessions use Muse Spark unless project `opencode.jsonc` overrides `model`.
 
+## D-011: Final Project Plan Committed — Pace and Guaranteed Core
+
+- **Date:** 2026-08-28
+- **Decision:** Commit final plan (`PROJECT_PLAN.md`) built for 1–2 hrs/day with guaranteed Tier 1 core and bonus Tier 2. Build order locked to 7 phases; Tier 1 demoable after Graph, before any stretch.
+- **Context:** Prior plan left pace implicit and allowed AST to block Tier 1.
+- **Consequence:** Tier 1 must be shippable alone (synthetic + 1 real repo); Tier 2 cannot be started until Tier 1 graph/report pass. Addresses hand-off risk if a bad week occurs.
+
+## D-012: Tier 2 Scope Change — Kubernetes Replaces AST
+
+- **Date:** 2026-08-28
+- **Decision:** Tier 2 is Kubernetes manifest support (YAML parsing, workload normalization, shared ConfigMap/Secret/shared-volume detection) feeding existing pipeline; AST/source-code table-name detection removed from scope.
+- **Context:** AST learning curve unpredictable; K8s uses same config-parsing skill as Tier 1, lower novel-concept risk, reuses pipeline.
+- **Consequence:** No `ast` dependency; candidate source becomes K8s workloads instead of code references. Must not create separate downstream architecture for K8s findings.
+- **Supercedes:** D-007 (AST extensibility), D-009 (Build Order with AST)
+
+## D-013: Resource-Based Graph — Service-to-Resource, Not Service-to-Service
+
+- **Date:** 2026-08-28
+- **Decision:** Graph visualizes bipartite `service → resource ← service` (e.g. `orders → DB_HOST=postgres ← reports`) with distinct node styles; do not render hidden coupling as direct `orders — reports` edge.
+- **Context:** Direct edge falsely implies network call; resource node explains mechanism.
+- **Consequence:** Graph stage consumes dependency model with `resource`/`resource_type`; uses `networkx` + `matplotlib` with two node classes; demo artifact must label resource nodes.
+- **Supercedes:** D-006 (graph as service-service edges)
+
+## D-014: LLM Verdict Caching — Local cache.json with Evidence-Bound Keys
+
+- **Date:** 2026-08-28
+- **Decision:** Cache LLM judgments in `cache.json`; cache key = candidate + relevant evidence (not just variable/value); reuse valid verdicts across runs.
+- **Context:** LLM calls expensive and non-deterministic; repeated analysis must be stable and cheap; same value can mean different things in different service contexts.
+- **Consequence:** Judge stage must hash evidence; cache file gitignored; consistency validation still requires running judgment >1× before trusting cache.
+
+## D-015: Parse + Normalize — env_file, Interpolation, and Messy-Fixture Contract
+
+- **Date:** 2026-08-28
+- **Decision:** Parser must support `env_file` (string or list, `str` or `{path, required}`), `${VAR_NAME}` interpolation with unresolved preserved, and (implemented 2026-08-28) multi-file `Union[Path,List[Path]]` deep-merge (env updated, volumes appended/unioned). Fixtures must be deliberately messy: comments, interpolation, `env_file` usage.
+- **Context:** New `AGENTS.md` §1 and `PROJECT_PLAN.md` §7 Phase 1 require these for realistic coupling; prior fixtures were clean and ignored `env_file`.
+- **Consequence:** `parser.py:84` `load_env_file` preserves `""` for `VAR=` (downstream LLM must treat `""` as intentional); `parser.py:352` `_load_service_env_files` merges env_file with explicit `environment:` overriding (Docker spec). Fixtures need refresh to satisfy ground truth; existing 32 tests remain valid but not sufficient.
+
+## D-016: Dependency Model Clarification — Service-to-Resource
+
+- **Date:** 2026-08-28
+- **Decision:** Dependency records are service-to-resource relationships (with `service_a`, `service_b`, `resource`, `resource_type`, `evidence`, `judge_result`, `confidence`) explaining coupling through shared resource, not asserted direct service-to-service call.
+- **Context:** Required for resource-based graph and honest reporting.
+- **Consequence:** Model must carry provenance; report renders resource + evidence + confidence.
+- **Supercedes:** D-004 (previous wording implied service-to-service edge)
+
 ---
 
 ### Template for Next Entry

@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 
 import yaml
 from dotenv import dotenv_values  # type: ignore[import-untyped]
@@ -90,7 +90,10 @@ def load_env_file(env_path: Optional[Path]) -> Dict[str, str]:
         return {}
     # dotenv_values handles quotes, comments, etc.
     values = dotenv_values(str(env_path))
-    # Filter out None values (dotenv returns None for missing)
+    # dotenv returns None only for malformed/comment lines; "" for `VAR=` is
+    # a valid value (empty string) and must be preserved — do NOT filter it.
+    # Filtering None is correct; empty strings flow through as real values and
+    # downstream LLM judgment must treat "" as intentional, not missing.
     return {k: v for k, v in values.items() if v is not None}
 
 
@@ -338,15 +341,113 @@ def normalize_volumes(
 # 5. Final project representation
 # ---------------------------------------------------------------------------
 
+def _resolve_env_file_path(raw_path: str | Path, base: Path) -> Path:
+    """Resolve env_file path relative to compose file's directory."""
+    p = Path(raw_path)
+    if not p.is_absolute():
+        p = base / p
+    return p
+
+
+def _load_service_env_files(
+    raw_env_file: Any,
+    compose_dir: Path,
+) -> Dict[str, str]:
+    """Load env_file entries (string or list, str or {path, required}) and merge.
+
+    Files are processed in order; later files override earlier ones.
+    Uses ``load_env_file`` so ``VAR=`` yields ``""`` (preserved) and malformed
+    lines (None) are dropped.
+    """
+    if raw_env_file is None:
+        return {}
+    # Normalize to list of entries
+    if isinstance(raw_env_file, (str, Path)):
+        entries: List[Any] = [raw_env_file]
+    elif isinstance(raw_env_file, dict):
+        # single object form: {path: "...", required: false}
+        entries = [raw_env_file]
+    elif isinstance(raw_env_file, list):
+        entries = raw_env_file
+    else:
+        raise ValueError(f"Unsupported env_file format: {type(raw_env_file)} -> {raw_env_file!r}")
+
+    merged: Dict[str, str] = {}
+    for entry in entries:
+        if isinstance(entry, dict):
+            raw_path = entry.get("path")
+            if not raw_path:
+                continue
+            required = bool(entry.get("required", True))
+            ef_path = _resolve_env_file_path(raw_path, compose_dir)
+            if not ef_path.exists() and not required:
+                continue
+        elif isinstance(entry, (str, Path)):
+            ef_path = _resolve_env_file_path(entry, compose_dir)
+        else:
+            # Coerce unexpected types to string path
+            ef_path = _resolve_env_file_path(str(entry), compose_dir)
+
+        loaded = load_env_file(ef_path)
+        # Later files override earlier (Docker spec)
+        merged.update(loaded)
+    return merged
+
+
+def _merge_projects(projects: List[Project]) -> Project:
+    """Deep-merge projects in order (for multi-file `docker compose -f`)."""
+    merged_services: Dict[str, Service] = {}
+    for proj in projects:
+        for svc_name, svc in proj.services.items():
+            if svc_name not in merged_services:
+                merged_services[svc_name] = svc
+            else:
+                existing = merged_services[svc_name]
+                # Env dicts: later overrides earlier
+                merged_env: Dict[str, Optional[str]] = dict(existing.environment)
+                merged_env.update(svc.environment)
+                # Volumes: appended/unioned, deduplicated by (source,target,type,ro) preserving order
+                combined = list(existing.volumes) + list(svc.volumes)
+                seen: set = set()
+                deduped: List[Volume] = []
+                for v in combined:
+                    key = (v.source, v.target, v.type, v.read_only)
+                    if key not in seen:
+                        seen.add(key)
+                        deduped.append(v)
+                merged_services[svc_name] = Service(
+                    name=svc_name, environment=merged_env, volumes=deduped
+                )
+    return Project(services=merged_services)
+
+
 def parse_compose_file(
-    compose_path: Path | str,
-    env_path: Optional[Path | str] = None,
+    compose_path: Union[Path, str, List[Union[Path, str]]],
+    env_path: Optional[Union[Path, str]] = None,
 ) -> Project:
     """Parse a docker-compose file and optional .env into a normalized Project.
 
-    compose_path: path to docker-compose.yml
+    compose_path: path to docker-compose.yml, or list of paths for
+        ``docker compose -f file1 -f file2`` style merging.
     env_path: path to .env file. If None, looks for .env next to compose file.
+
+    Priority 1 in this update: per-service ``env_file`` (string or list) is
+    loaded via ``load_env_file`` and merged into the service's environment,
+    with explicit ``environment:`` keys overriding ``env_file:`` keys (Docker spec).
+
+    Priority 2: when ``compose_path`` is a list, files are parsed sequentially
+    and deep-merged: env dicts updated, volume lists appended/unioned.
     """
+    # --- Multi-file merging (priority 2) ---
+    if isinstance(compose_path, list):
+        # Parse each file independently (respects per-file .env / env_file)
+        # If env_path is explicitly given, pass it through to each file;
+        # otherwise each file uses its own adjacent .env.
+        projects: List[Project] = []
+        for p in compose_path:
+            projects.append(parse_compose_file(p, env_path))
+        return _merge_projects(projects)
+
     compose_path = Path(compose_path)
     if not compose_path.exists():
         raise FileNotFoundError(f"Compose file not found: {compose_path}")
@@ -358,9 +459,9 @@ def parse_compose_file(
         candidate = compose_path.parent / ".env"
         env_path = candidate if candidate.exists() else None
     else:
-        env_path = Path(env_path)
+        env_path = Path(env_path)  # type: ignore[arg-type]
 
-    env_vars = load_env_file(env_path) if env_path else {}
+    env_vars = load_env_file(env_path) if env_path else {}  # type: ignore[arg-type]
 
     services_raw = data.get("services", {})
     if services_raw is None:
@@ -376,9 +477,16 @@ def parse_compose_file(
             raise ValueError(f"Service {svc_name} must be a mapping")
 
         raw_env = svc_data.get("environment")
+        raw_env_file = svc_data.get("env_file")
         raw_volumes = svc_data.get("volumes")
 
-        env = normalize_environment(raw_env, env_vars)
+        # Priority 1: load env_file (string or list) and merge; explicit env overrides
+        env_from_files = _load_service_env_files(raw_env_file, compose_path.parent)
+        env_explicit = normalize_environment(raw_env, env_vars)
+        # env_file as base, explicit environment wins (Docker spec)
+        merged_env: Dict[str, Optional[str]] = dict(env_from_files)  # type: ignore[assignment]
+        merged_env.update(env_explicit)
+        env = merged_env
         volumes = normalize_volumes(raw_volumes, env_vars)
 
         services[str(svc_name)] = Service(
