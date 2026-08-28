@@ -1,5 +1,6 @@
-"""BlindSpot — Hidden Dependency Discovery (Stage 2: Parse + Normalize)."""
+"""BlindSpot — Hidden Dependency Discovery (Stage 2: Parse + Normalize + Candidate Discovery)."""
 
+from .discovery import Candidate, discover_candidates
 from .parser import (
     Project,
     Service,
@@ -13,9 +14,11 @@ from .parser import (
 )
 
 __all__ = [
+    "Candidate",
     "Project",
     "Service",
     "Volume",
+    "discover_candidates",
     "load_env_file",
     "normalize_environment",
     "normalize_volume",

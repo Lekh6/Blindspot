@@ -1,10 +1,19 @@
-services:
-  orders:
-    image: orders:latest
-    environment:
-      PORT: "8000"
+# near_miss — MUST NOT be flagged: same PORT name, different values
+# Messy: comments, env_file, ${VAR} interpolation — but PORT mismatch stays
 
-  reports:
-    image: reports:latest
+services:
+  orders: # service A
+    image: orders:latest
+    env_file: common.env  # shared file but PORT not in it — coincidence test
     environment:
-      PORT: "9000"
+      PORT: "8000"  # distinct value — same name alone != dependency
+      # interpolated generic var — same value but filtered as noise later
+      APP_ENV: ${APP_ENV:-development}
+
+  reports: # service B
+    image: reports:latest
+    env_file:
+      - common.env  # list form
+    environment:
+      PORT: "9000"  # distinct — near miss, must NOT be coupled
+      APP_ENV: ${APP_ENV}  # resolves via .env to development

@@ -2,7 +2,7 @@
 
 > Why BlindSpot looks the way it does. Append-only log — never delete, only supercede with new entry.
 
-**Last Updated:** 2026-08-27
+**Last Updated:** 2026-08-28
 
 ---
 
@@ -122,6 +122,20 @@
 - **Context:** Required for resource-based graph and honest reporting.
 - **Consequence:** Model must carry provenance; report renders resource + evidence + confidence.
 - **Supercedes:** D-004 (previous wording implied service-to-service edge)
+
+## D-017: Deliberately Messy Fixtures + Fixture Env Tracking
+
+- **Date:** 2026-08-28
+- **Decision:** Refresh 3 fixtures to be deliberately messy per `PROJECT_PLAN.md:205` Phase 1: `shared_env` (`docker-compose.yml` + `.env:DB_HOST` + `common.env:DB_NAME` with comments/`${VAR}`/fallback/`env_file` string vs list), `shared_volume` (`+ .env:DATA_PATH` with `${DATA_PATH}`), `near_miss` (`+ .env`/`common.env` with `APP_ENV`/`SHARED_NOISE`, `PORT` different values). Patched `.gitignore:9` with `!fixtures/**/.env` + `!fixtures/**/common.env` so env files are tracked (otherwise `.env` ignored).
+- **Context:** Final `AGENTS.md:31` requires `env_file` + `${VAR}` handling; messy fixtures prove parser handles real-world noise while keeping invariants (`DB_HOST=shared-db`/`DB_NAME=orders`, `shared-data:/data`, `PORT 8000≠9000`).
+- **Consequence:** Fixtures now produce 3/2/3 candidates (extra `SHARED_EXTRA`, `DATA_PATH`, `SHARED_NOISE`/`APP_ENV` shared) — intentional noise for discovery/filtering. Existing 32 parser tests still pass; manual parse checks verify `SHARED_EXTRA=keep` etc. Fixtures are now tracked and deterministic.
+
+## D-018: Candidate Discovery — Pairwise Shared Config/Volume
+
+- **Date:** 2026-08-28
+- **Decision:** `src/blindspot/discovery.py:19` `Candidate(service_a, service_b, resource, resource_type, evidence)` frozen + `discovery.py:35` `discover_candidates(Project)`: sorted service pairs via `itertools.combinations`, env `env_var` (same key → candidate; `resource=key=value` when same non-None value else `key`, evidence notes `different values (a=... vs b=...)`), volumes only `type=="named"` with `source` (ignore bind/anonymous), `resource=source` with evidence including `target` + type + targets-differ note, sorted by `(service_a, service_b, resource_type, resource)`.
+- **Context:** Stage 2 must find possible couplings without deciding dependency (`AGENTS.md:52`) — filtering (Stage 3) and LLM (Stage 4) decide. Messy fixtures yield 3/2/3 candidates, correctly handling `${VAR}`-resolved values and `env_file`-merged envs.
+- **Consequence:** `shared_env` yields `DB_HOST`/`DB_NAME` (+ extra), `shared_volume` yields `shared-data` (+ `DATA_PATH` env), `near_miss` yields `PORT` (different values evidence) etc — all discovered. `__init__.py` exports `Candidate`/`discover_candidates`. 8 new tests in `tests/test_discovery.py:1` (3 fixture + 5 unit: different-values, same-value, bind/anon ignored, named volume, 3-service pairs) — total 40 passed.
 
 ---
 

@@ -7,6 +7,8 @@ __pycache__/
 venv/
 env/
 .env
+!fixtures/**/.env
+!fixtures/**/common.env
 *.egg-info/
 dist/
 build/

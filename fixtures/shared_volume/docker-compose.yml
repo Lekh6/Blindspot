@@ -1,13 +1,23 @@
-services:
-  orders:
-    image: orders:latest
-    volumes:
-      - shared-data:/data
+# shared_volume — true positive: orders ↔ reports share named volume
+# Messy: comments, irregular spacing, trailing comment, interpolation
 
-  reports:
-    image: reports:latest
+services:
+  orders: # writer service
+    image: orders:latest
+    environment:
+      # interpolation demo — not needed for volume but proves parser handles it alongside volumes
+      DATA_PATH: ${DATA_PATH:-/data}
+    # volumes with comment
     volumes:
-      - shared-data:/data
+      - shared-data:/data  # named volume shared — coupling point
+
+  reports: # reader service
+    image: reports:latest
+    environment:
+      DATA_PATH: ${DATA_PATH}  # resolves via .env to /data
+    volumes:
+      - shared-data:/data  # same named volume — real hidden coupling
 
 volumes:
-  shared-data:
+  shared-data: # named volume definition — comment
+    driver: local

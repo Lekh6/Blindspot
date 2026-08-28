@@ -3,8 +3,8 @@
 > Single source of truth for where BlindSpot stands. Update this file on every meaningful change.
 
 **Last Updated:** 2026-08-28
-**Branch:** `main` — 1 commit (`3859ca1`), working tree has uncommitted updates (parser env_file/multi-file + new plan)
-**Status:** `Tier 1 In Progress` — Stage 1 fixtures + Stage 2 parser done (with env_file and multi-file merge), stages 3-7 not started
+**Branch:** `main` — 1 commit (`3859ca1`), working tree: 4 modified + 5 untracked + 2 new files (`discovery.py`, `test_discovery.py`)
+**Status:** `Tier 1 In Progress` — Stages 1–2 **DONE** (messy fixtures + parser + candidate discovery), Stage 3 filtering next
 
 ---
 
@@ -12,13 +12,14 @@
 
 | Area | State |
 |------|-------|
-| **Repo Init** | `git` on `main`, 1 commit; `AGENTS.md` updated to final architecture 2026-08-28 |
-| **Architecture Doc** | `AGENTS.md` = final 7-stage pipeline (resource-based graph, verdict caching, K8s Tier 2); `PROJECT_PLAN.md` added (final pace + pitch) |
+| **Repo Init** | `git` on `main`, 1 commit; `AGENTS.md` final, `PROJECT_PLAN.md` added |
+| **Architecture Doc** | `AGENTS.md` = final 7-stage pipeline (resource graph, `cache.json`, K8s Tier 2); `PROJECT_PLAN.md` = pace 1–2h/day |
 | **Global Config** | `~/.config/opencode/opencode.jsonc` model `opencode/muse-spark-1.2-contributor-free` |
-| **Codebase** | `src/blindspot/parser.py` (523 LOC) — 5 layers, env mapping/list, `${VAR}`/`$VAR`/`:-default` preserved, volumes named/bind/anonymous, `env_file` (string/list, `{path,required}`), multi-file `Union[Path,List[Path]]` deep-merge |
-| **Fixtures** | `fixtures/shared_env`, `fixtures/shared_volume`, `fixtures/near_miss` — valid but **not yet deliberately messy** (need comments, `${VAR}` interpolation, `env_file` usage per new plan §7 Phase 1) |
-| **Tests** | `tests/test_parser.py` 32 passed; no candidate/filter/judge/graph tests yet |
-| **Docs** | `STATE.md`, `DECISIONS.md`, `HANDOFF.md` need catch-up; `README.md` still describes old Stage 1 fixtures |
+| **Codebase** | `parser.py` 523 LOC + `discovery.py` 108 LOC (`Candidate` + `discover_candidates`) — env `env_file`+`Union[List]`+`${VAR}`, volumes, pairwise env+`named_volume` discovery |
+| **Fixtures** | 3 messy fixtures with `.env`/`common.env`, comments, `${VAR}`/`env_file` — invariants preserved |
+| **Tests** | **40 passed**: `test_parser.py` 32 + `test_discovery.py` 8 (messy fixture checks for `DB_HOST`/`shared-data`/`PORT` plus unit pairs); all deterministic |
+| **Docs** | `STATE.md`/`HANDOFF.md` refreshed; `DECISIONS.md` needs D-017/018; `README.md` still old |
+| **Gitignore** | `!fixtures/**/.env` + `!fixtures/**/common.env` added |
 
 ---
 
@@ -26,16 +27,16 @@
 
 | # | Stage | Status | Notes |
 |---|-------|--------|-------|
-| 1 | **Parse + Normalize** (`docker-compose.yml` + `.env` + supported `env_file` + `${VAR}`) | `Done` (needs messy-fixture refresh) | `parser.py:85` `load_env_file` preserves `""` for `VAR=`, `parser.py:352` `_load_service_env_files` merges env_file (explicit env overrides per Docker spec), `parser.py:108` `_resolve_value`, multi-file merge `parser.py:397` |
-| 2 | **Candidate Discovery** (shared env config, shared named volumes) | `Not Started` | Depends on Stage 1; Tier 1 only, K8s ConfigMap/Secret candidates are Tier 2 |
-| 3 | **Candidate Filtering** (deterministic heuristics, evidence, conservative near-miss e.g. `PORT`) | `Not Started` | Must filter `PORT`/`DEBUG`/logging noise before LLM |
-| 4 | **LLM Judge** (narrow pre-extracted candidate, consistency >1 run, `cache.json`) | `Not Started` | Cache key = candidate+evidence, not just var/value |
-| 5 | **Dependency Model** (`service_a`, `service_b`, `resource`, `resource_type`, `evidence`, `judge_result`, `confidence`) + service-to-resource (not direct service-service edge) | `Not Started` | Schema to preserve provenance |
-| 6 | **Graph** (`networkx` + `matplotlib`, **resource nodes** bipartite `orders→DB_HOST←reports`) | `Not Started` | Primary demo artifact, distinct visual treatment |
-| 7 | **Report** (human-readable, explains resource + evidence + judgment/confidence) | `Not Started` | Depends on Stage 5 |
+| 1 | **Parse + Normalize** (`docker-compose.yml` + `.env` + supported `env_file` + `${VAR}`) | `Done` | `parser.py:85` `""` preserved, `parser.py:352` env_file, `parser.py:108` resolve, `parser.py:397` multi-file |
+| 2 | **Candidate Discovery** (shared env config, shared named volumes) | `Done` | `discovery.py:19` `Candidate` (`service_a/b`, `resource`, `resource_type`, `evidence`) + `discovery.py:35` `discover_candidates`: pairwise sorted, env (same key→candidate, evidence notes value equality) + `named_volume` only (bind/anon ignored); 8 tests |
+| 3 | **Candidate Filtering** (deterministic heuristics, conservative) | `Not Started` ⬅ **NEXT** | Filter `PORT`/`DEBUG`/`LOG_LEVEL` before LLM, build evidence |
+| 4 | **LLM Judge** (narrow candidate, `cache.json` `candidate+evidence` key) | `Not Started` | |
+| 5 | **Dependency Model** (service-to-resource `evidence`/`judge_result`/`confidence`) | `Not Started` | |
+| 6 | **Graph** (`networkx` + `matplotlib`, resource nodes) | `Not Started` | |
+| 7 | **Report** (human-readable) | `Not Started` | |
 
-**Overall Tier 1:** ~25% — parser + clean fixtures done; filtering/judge/model/graph/report + messy fixtures + real-world validation remain
-**Tier 2 (Kubernetes ConfigMap/Secret/shared volumes):** `Blocked` — do not start until Tier 1 demoable; **AST discontinued** per new architecture
+**Overall Tier 1:** ~40% — Stages 1–2 done; stages 3–7 + real-world validation remain
+**Tier 2 (Kubernetes):** `Blocked` — do not start until Tier 1 demoable
 
 ---
 
@@ -43,64 +44,64 @@
 
 ```
 Blindspot/
-├── AGENTS.md              # final architecture — 7 stages, resource graph, K8s Tier 2
-├── PROJECT_PLAN.md        # final project plan — pace 1-2h/day, scope tiers, build order
+├── AGENTS.md              # final architecture
+├── PROJECT_PLAN.md        # final plan
 ├── STATE.md               # this file
-├── DECISIONS.md           # architectural decisions (needs D-011.. superseding AST)
-├── HANDOFF.md             # next-agent handoff (needs refresh)
-├── .git/                  # main @ 3859ca1 + uncommitted AGENTS.md/parser.py/PROJECT_PLAN.md
+├── DECISIONS.md
+├── HANDOFF.md
+├── .gitignore             # allows fixtures/**/.env
 ├── fixtures/
-│   ├── shared_env/docker-compose.yml
-│   ├── shared_volume/docker-compose.yml
-│   └── near_miss/docker-compose.yml
+│   ├── shared_env/ (yml + .env + common.env) # 3 messy, 3 candidates
+│   ├── shared_volume/ (yml + .env)          # 2 candidates (1 vol + 1 env)
+│   └── near_miss/ (yml + .env + common.env) # 3 candidates, PORT different values
 ├── src/blindspot/
-│   ├── __init__.py
-│   └── parser.py          # 523 LOC, env_file + multi-file merge
+│   ├── __init__.py        # exports Candidate/discover_candidates
+│   ├── parser.py          # 523 LOC
+│   └── discovery.py       # 108 LOC ⬅ NEW
 ├── tests/
 │   ├── conftest.py
-│   └── test_parser.py     # 32 tests
-├── requirements.txt       # pyyaml, python-dotenv, networkx, matplotlib
-└── .opencode/
+│   ├── test_parser.py     # 32
+│   └── test_discovery.py  # 8 ⬅ NEW
+└── requirements.txt
 ```
 
 **Missing / Expected Next:**
-- Messy fixture refresh (comments, `${VAR}`, `env_file` in fixtures)
-- `src/blindspot/discovery.py`, `filtering.py`, `judge.py`, `model.py`, `graph.py`, `report.py`
-- `cache.json` (LLM verdict cache, gitignored)
-- Real-world repo clone + validation
+- `src/blindspot/filtering.py` ⬅ NEXT, `judge.py`, `model.py`, `graph.py`, `report.py`
+- `cache.json`, real-world repo, `README.md` refresh
 
 ---
 
 ## 4. Technology
 
 - **Required:** Python 3.10+, `pyyaml`, `python-dotenv`, `networkx`, `matplotlib`
-- **No AST dependency** — Tier 2 uses YAML parsing for Kubernetes manifests (per AGENTS.md Current Technology)
-- **Docker:** Not required (reads compose as text)
-- **Model:** `opencode/muse-spark-1.2-contributor-free` (global default)
+- **No AST** — Tier 2 K8s via YAML
+- **Docker:** Not required
+- **Model:** `opencode/muse-spark-1.2-contributor-free`
 
 ---
 
 ## 5. Development Priorities (from AGENTS.md — Order Matters)
 
-1. Deliberately messy synthetic test repositories (refresh fixtures) ⬅ **NEXT**
-2. Config parser — done, but needs re-validation against messy fixtures
-3. Candidate discovery
-4. Candidate filtering and evidence construction
+1. Deliberately messy synthetic test repositories — **DONE**
+2. Config parser — **DONE**
+3. Candidate discovery — **DONE** (8 tests)
+4. Candidate filtering and evidence construction ⬅ **NEXT**
 5. LLM judgment layer + verdict cache (`cache.json`)
 6. Dependency model (service-to-resource)
 7. Resource-based graph output
 8. Report generation
-9. Real-world repository validation (1 small OSS multi-service repo)
+9. Real-world repository validation
 10. Tier 2 Kubernetes support only if time allows
 
 ---
 
 ## 6. Recent Activity
 
-- 2026-08-28: Applied final `PROJECT_PLAN.md` + final `AGENTS.md` (committed ground truths) — resource-based graph, verdict caching, K8s Tier 2 replaces AST, env_file + interpolation required, messy fixtures required
-- 2026-08-28: `parser.py` updated — `env_file` (string/list + `{path,required}`), explicit env overrides, `""` preserved, multi-file `Union[Path,List[Path]]` deep-merge (env updated, volumes appended/unioned); comment clarified for LLM layer
-- 2026-08-28: Prior commit `3859ca1` — Stage 1 .venv + fixtures + Stage 2 parser (yaml/.env/env normalize/volume normalize/Project model), 32 tests passing
-- 2026-08-27: Initialized `AGENTS.md` / `STATE.md` / `DECISIONS.md` / `HANDOFF.md`, set global model
+- 2026-08-28: **Stage 2 Candidate Discovery** — `discovery.py:19` `Candidate` + `discovery.py:35` pairwise env (`env_var`, resource `key=value` when equal else `key`, evidence with values) + `named_volume` (`source` only, bind/anon ignored), sorted deterministic; `test_discovery.py` 8 tests (3 messy fixture + 5 unit); 40 total passed; `__init__.py` exports
+- 2026-08-28: Phase 1 messy fixtures (comments/`${VAR}`/`env_file`, 5 env files, `.gitignore` fix, parser 523 LOC)
+- 2026-08-28: Final `PROJECT_PLAN.md` + `AGENTS.md` (resource graph, caching, K8s)
+- 2026-08-28: Commit `3859ca1` baseline
+- 2026-08-27: Initialized docs, set global model
 
 ---
 

@@ -2,79 +2,89 @@
 
 > Read this first when you start a session. It tells you where we left off and exactly what to do next.
 **Last Updated:** 2026-08-28
-**Current Phase:** Tier 1 In Progress — final plan/architecture committed, parser with env_file done, stages 3–7 pending
-**Current Branch:** `main` — 1 commit (`3859ca1`), uncommitted `AGENTS.md`/`PROJECT_PLAN.md`/`parser.py` updates
+**Current Phase:** Tier 1 — Stages 1–2 **DONE** (messy fixtures + parser + discovery done), **Stage 3 NEXT: Candidate Filtering**
+**Current Branch:** `main` — 1 commit (`3859ca1`), working tree: 5 modified + 6 untracked + 2 new tracked files
 
 ---
 
 ## 1. TL;DR for Next Agent
 
-1. Read `AGENTS.md` (final architecture — resource-based graph, K8s Tier 2, verdict caching), then `PROJECT_PLAN.md` (pace 1–2h/day + 7-phase build order), then `STATE.md` §2 pipeline table, then this file.
-2. Parser is done at `src/blindspot/parser.py:424` — supports `.env`, `env_file` (string/list + `{path,required}`), `${VAR}` interpolation, multi-file `Union[Path,List[Path]]` merge (`parser.py:397`). 32 tests pass.
-3. **Ground truth changed 2026-08-28** — Tier 2 is **Kubernetes** (ConfigMap/Secret/volumes), **not AST**; graph is **service→resource←service** bipartite; LLM needs **local `cache.json`** with **candidate+evidence key**; fixtures must be **deliberately messy** (comments, `${VAR}`, `env_file`).
-4. Keep these updated every session: `STATE.md` (§1 snapshot, §2 statuses, §6 activity), `DECISIONS.md` (append ADR), `HANDOFF.md` (§§2–3).
-5. Global model stays `opencode/muse-spark-1.2-contributor-free` — do not change.
+1. Read `AGENTS.md` (resource graph `orders→resource←reports`, K8s Tier 2, `cache.json`), then `PROJECT_PLAN.md` (§7), then `STATE.md` §2, then this file.
+2. **Stages 1–2 DONE 2026-08-28:** fixtures messy (comments/`${VAR}`/`env_file`), `parser.py` 523 LOC (`_load_service_env_files:352`, `_merge_projects:397`), `discovery.py` 108 LOC (`Candidate:19`, `discover_candidates:35` pairwise env+`named_volume` only). **40 tests pass** (32 parser + 8 discovery) on messy fixtures.
+3. **Discovery output:** `Candidate{service_a, service_b, resource, resource_type, evidence}` sorted deterministic — `shared_env` 3 (DB_HOST/DB_NAME/SHARED_EXTRA), `shared_volume` 2 (DATA_PATH + shared-data), `near_miss` 3 (PORT different values + APP_ENV + SHARED_NOISE). Filtering will handle `PORT`.
+4. Keep these updated: `STATE.md`, `DECISIONS.md`, `HANDOFF.md` every session.
+5. Global model `opencode/muse-spark-1.2-contributor-free`, `.gitignore:9` allows `fixtures/**/.env`.
 
 ---
 
 ## 2. Where We Left Off
 
-- `AGENTS.md` committed from initial paste — 7-stage pipeline `Parse→Discovery→Filtering→LLM Judge→Dependency Model→Graph→Report`.
-- `3859ca1` (2026-08-28): Stage 1 `.venv` (py 3.14.6), `requirements.txt` (`pyyaml`, `python-dotenv`, `networkx`, `matplotlib`), fixtures `shared_env`/`shared_volume`/`near_miss` (clean), `src/blindspot/parser.py` 415 LOC (5 layers: YAML, .env, env normalize, volume normalize, Project).
-- **2026-08-28 (uncommitted):** applied final `PROJECT_PLAN.md` + final `AGENTS.md` per user paste — resource-based graph (`orders→DB_HOST=postgres←reports`), `cache.json` verdict caching, K8s Tier 2 replaces AST, `env_file` + `${VAR}` required, messy fixtures required.
-- **2026-08-28 (uncommitted):** `parser.py` extended to 523 LOC — `_load_service_env_files:352` (string/list/dict, relative resolution, later-file overrides), `merged_env` explicit-over-file (`parser.py:487`), `""` preserved (`parser.py:93` comment fix), multi-file `Union[Path,List[Path]]` deep-merge (`_merge_projects:397` — env `.update()`, volumes appended/unioned deduped).
-- 32 tests `tests/test_parser.py` still pass; manual checks for env_file override, list order, `{path,required:false}`, multi-file merge, `VAR=` empty-string all passed.
-- `git status` shows modified `AGENTS.md`, `src/blindspot/parser.py`, untracked `PROJECT_PLAN.md`; `STATE.md`/`DECISIONS.md`/`HANDOFF.md` now updated this session but not yet committed.
-- Fixtures are **still clean** — not yet refreshed to messy ground truth (needed before Candidate Discovery is tested realistically).
+- `AGENTS.md` final (7-stage) + `PROJECT_PLAN.md` final.
+- `3859ca1` baseline.
+- **2026-08-28 messy fixtures + parser restore:** 3 `docker-compose.yml` + 5 env files (`.env`/`common.env`), comments/`${VAR:-default}`/`env_file` string vs list, invariants kept (`DB_HOST=shared-db`/`DB_NAME=orders`, `shared-data:/data`, `PORT 8000≠9000`); `.gitignore` patched; parser 523 LOC.
+- **2026-08-28 discovery:** `src/blindspot/discovery.py:1` — `Candidate` frozen dataclass + `discover_candidates`:
+  - Env: intersection of keys, `resource=key=value` if same non-None value else `key`, evidence notes equality vs `different values (a=... vs b=...)`
+  - Volumes: only `type=="named"` with `source`, shared `source` → candidate `resource=source`, evidence with `target` + type, targets-differ note.
+  - Sorted by `(service_a, service_b, resource_type, resource)`.
+  - `src/blindspot/__init__.py` now exports `Candidate`/`discover_candidates`.
+  - `tests/test_discovery.py:1` 8 tests (3 messy fixture + 5 unit: same-key-different-values, same-value, bind/anon ignored, named volume, 3-service pairs) — all pass; total 40.
+- `git status`: `M AGENTS.md`, `M .gitignore`, `M fixtures/*/*.yml`, `M src/blindspot/parser.py`, `M src/blindspot/__init__.py`, `?? PROJECT_PLAN.md`, `?? fixtures/**/.env`, `?? fixtures/**/common.env`, `?? src/blindspot/discovery.py`, `?? tests/test_discovery.py`, `M STATE.md`/`HANDOFF.md` updated.
+- **Not yet done:** `DECISIONS.md` D-017/018 for messy fixtures + discovery, `README.md` still old.
 
 ---
 
-## 3. Immediate Next Steps (Do In Order — Per Final Plan)
+## 3. Immediate Next Steps (Do In Order)
 
-**Do not skip or reorder — per `AGENTS.md` Development Priorities and `PROJECT_PLAN.md` §7:**
+**Stages 1–2 DONE — do not redo. Next is Stage 3 per `AGENTS.md:233`:**
 
-1. **Refresh synthetic fixtures (Phase 1 remaining)** — make `fixtures/{shared_env,shared_volume,near_miss}` deliberately messy: add ` # comments`, `${VAR_NAME}` interpolation referencing `.env`/`env_file`, and at least one service using `env_file:` (e.g. `common.env`). Keep invariants: `shared_env` = true positive (shared `DB_HOST=shared-db` etc), `shared_volume` = true positive (`shared-data:/data`), `near_miss` = both define `PORT` `8000` vs `9000` must NOT be flagged.
-   - Then re-run `python -m pytest -v` and add 2–3 new parser tests for env_file + interpolation.
-2. **Candidate Discovery (Stage 2)** — `src/blindspot/discovery.py`: scan normalized `Project` for shared env keys (where value equality or config coupling matters) + shared named volumes → `Candidate{service_a, service_b, resource, resource_type, evidence}`. Do NOT decide dependency yet.
-3. **Candidate Filtering (Stage 3)** — `src/blindspot/filtering.py`: deterministic heuristics to filter/deprioritize `PORT`, `DEBUG`, `LOG_LEVEL` etc conservatively + build evidence strings for LLM.
-4. **LLM Judge (Stage 4)** — `src/blindspot/judge.py`: narrow prompt on single candidate + evidence, returns `{is_dependency, confidence, reasoning}`; cache in `cache.json` (key = hash(candidate+evidence)); run >1× in validation to check consistency.
-5. **Dependency Model (Stage 5)** — `src/blindspot/model.py`: `Dependency(service_a, service_b, resource, resource_type, evidence, judge_result, confidence)` service-to-resource provenance.
-6. **Resource Graph (Stage 6)** — `src/blindspot/graph.py`: `networkx`+`matplotlib`, bipartite nodes (service vs resource), edges `service→resource`; distinct colors/shapes.
-7. **Report (Stage 7)** — human-readable findings with resource/evidence/judgment/confidence.
-8. **Real-world validation (Tier 1)** — pre-scout 10–15 min, pick 1 small OSS multi-service repo (e.g. `dockersamples/example-voting-app`), run pipeline, write up.
-9. **Tier 2 Kubernetes only if time allows** — `src/blindspot/k8s.py` parsing manifests for shared ConfigMap/Secret/volumes → same pipeline `Discovery→Filtering→Judge→Model→Graph→Report`. **Do NOT do AST.**
+1. **Candidate Filtering (Stage 3) NEXT** — `src/blindspot/filtering.py`:
+   - Input: `List[Candidate]`.
+   - Deterministic heuristics: filter/deprioritize `PORT`, `HOST`, `DEBUG`, `LOG_LEVEL`, `SHARED_EXTRA`/`SHARED_NOISE` etc conservatively — reduce obvious noise but **don't claim it can never be coupling** (`AGENTS.md:65`). Keep `DB_HOST`/`DB_NAME` and `shared-data` volume.
+   - Build `evidence` strings for remaining candidates to feed LLM.
+   - Output: `List[Candidate]` filtered + enriched evidence (or `FilteredCandidate`).
+   - Test against messy fixtures: `near_miss`'s `PORT` (different values) should be filtered/deprioritized, `APP_ENV`/`SHARED_NOISE` may be filtered as generic; `shared_env`/`shared_volume` should keep real candidates.
 
-**Tier 2 (K8s) is `Blocked` until Tier 1 graph+report demo passes.**
+2. **LLM Judge (Stage 4)** — `src/blindspot/judge.py`: narrow prompt on single candidate + evidence → `{is_dependency, confidence, reasoning}`; cache in `cache.json` with key = hash(candidate+evidence); run >1× for consistency.
+
+3. **Dependency Model (Stage 5)** — `src/blindspot/model.py`: `Dependency(service_a, service_b, resource, resource_type, evidence, judge_result, confidence)` service-to-resource.
+
+4. **Resource Graph (Stage 6)** — `src/blindspot/graph.py`: `networkx`+`matplotlib` bipartite `service→resource`.
+
+5. **Report (Stage 7)** — human-readable findings.
+
+6. **Real-world validation** — 1 small OSS multi-service repo.
+
+7. **Tier 2 K8s** — blocked until Tier 1 demo.
 
 ---
 
 ## 4. Critical Constraints & Gotchas
 
-- **Discovery ≠ Judgment** — LLM only judges pre-extracted candidates, never scans codebase freely.
-- **Shared names ≠ dependencies** — `PORT` near-miss must not be flagged; all shared names go through filtering+LLM.
-- **Evidence matters** — every dependency carries `evidence` + `judge_result` + `confidence` into Model/Graph/Report.
-- **Filtering before LLM** — heuristics run first to reduce cost; LLM reserved for semantic ambiguity.
-- **Verdict caching** — `cache.json` key = candidate + evidence; same value in different contexts must not share verdict.
-- **Resource-based graph** — edges are `service → resource`, not `service ↔ service`; avoids implying direct call.
-- **Extensibility** — K8s findings reuse same pipeline, no parallel architecture.
-- **Parser contract** — preserves unresolved `${VAR}`, preserves `""` for `VAR=` (`load_env_file` filters only `None`), explicit `environment:` overrides `env_file:`.
-- **Stack** — `pyyaml`, `python-dotenv`, `networkx`, `matplotlib` only; no `ast` needed; Python 3.10+.
-- **Docker not required** — parse compose as text.
-- **Windows host** — `C:\Users\Lekha\Projects\Blindspot`, `bash` maps `~` → `C:\Users\Lekha`, no `powershell.exe`.
-- **Ground truth docs** — `AGENTS.md` + `PROJECT_PLAN.md` are committed; if they conflict, `AGENTS.md` (§1–§7, Scope, Principles) is canonical for build.
+- **Discovery ≠ Judgment** — LLM only judges pre-extracted candidates.
+- **Shared names ≠ dependencies** — `PORT` near-miss must be filtered, not flagged.
+- **Evidence matters** — every dependency carries `evidence` + `judge_result` + `confidence`.
+- **Filtering before LLM** — heuristics first, LLM for semantic ambiguity.
+- **Verdict caching** — `cache.json` key = candidate + evidence.
+- **Resource graph** — `service → resource`, not `service ↔ service`.
+- **Extensibility** — K8s reuses same pipeline.
+- **Parser contract** — preserves `${VAR}`, `""` for `VAR=`, explicit overrides `env_file`.
+- **Fixture contract** — messy fixtures now produce 3/2/3 candidates; downstream must handle that.
+- **Stack** — `pyyaml`, `python-dotenv`, `networkx`, `matplotlib` only.
+- **Windows host** — `C:\Users\Lekha\Projects\Blindspot`, `bash`.
 
 ---
 
 ## 5. Session Handoff Checklist (Update Before You Leave)
 
-Copy and check in final message:
+- [x] `STATE.md` §2 flipped (Stage 2 → Done, Stage 3 → NEXT)
+- [x] `STATE.md` §6 Recent Activity appended (discovery)
+- [ ] `DECISIONS.md` D-017/018 (messy fixtures + discovery) — TODO
+- [x] `HANDOFF.md` §§2–3 updated (stages 1–2 done, next = filtering)
+- [x] Tests run (40 passed: 32 parser + 8 discovery)
+- [ ] `README.md` refresh — TODO
+- [ ] Commit — still 1 commit, working tree has 10+ dirty/untracked
 
-- [ ] `STATE.md` §2 pipeline statuses flipped if stage completed
-- [ ] `STATE.md` §6 Recent Activity appended with date + summary
-- [ ] `DECISIONS.md` appended if any new ADR (e.g., filtering heuristics, cache key design, K8s schema)
-- [ ] `HANDOFF.md` §§2–3 updated to reflect new next step
-- [ ] Tests run and noted (synthetic + near-miss + messy fixtures)
-- [ ] Commit created? (pending: `docs: commit final plan + resource graph + K8s Tier 2` + `feat(parser): env_file + multi-file merge` — currently 1 commit only, working tree has 3+ files dirty)
+**Next agent:** add D-017/018 + README, then `filtering.py`.
 
 ---
 
@@ -83,19 +93,12 @@ Copy and check in final message:
 ```bash
 git status
 git log --oneline -10
-git diff
 git diff --stat
-ls -R
-cat AGENTS.md
-cat PROJECT_PLAN.md
-cat STATE.md
-cat DECISIONS.md
-cat HANDOFF.md
-# after init:
-python -m venv .venv && source .venv/Scripts/activate  # Windows git-bash
-pip install -r requirements.txt
 pytest -v
-PYTHONPATH=src python -m blindspot.parser  # if CLI exists
+pytest tests/test_discovery.py -v
+PYTHONPATH=src python -c "from blindspot.parser import parse_compose_file; from blindspot.discovery import discover_candidates; print(discover_candidates(parse_compose_file('fixtures/shared_env/docker-compose.yml')))"
+ls -R fixtures
+cat src/blindspot/discovery.py
 ```
 
 ---
@@ -106,5 +109,6 @@ PYTHONPATH=src python -m blindspot.parser  # if CLI exists
 2. `C:\Users\Lekha\Projects\Blindspot\PROJECT_PLAN.md`
 3. `C:\Users\Lekha\Projects\Blindspot\STATE.md`
 4. `C:\Users\Lekha\Projects\Blindspot\DECISIONS.md`
-5. `C:\Users\Lekha\Projects\Blindspot\src\blindspot\parser.py`
-6. `C:\Users\Lekha\.config\opencode\opencode.jsonc` (global model)
+5. `C:\Users\Lekha\Projects\Blindspot\HANDOFF.md`
+6. `C:\Users\Lekha\Projects\Blindspot\src\blindspot/discovery.py`
+7. `C:\Users\Lekha\Projects\Blindspot\tests/test_discovery.py`

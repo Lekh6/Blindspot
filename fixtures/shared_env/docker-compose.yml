@@ -1,17 +1,29 @@
-services:
-  orders:
-    image: orders:latest
-    environment:
-      DB_HOST: shared-db
-      DB_NAME: orders
+# shared_env — true positive: orders ↔ reports share DB config
+# Deliberately messy: comments, blank lines, ${VAR} interpolation, env_file
 
-  reports:
-    image: reports:latest
+services:
+  # orders service — handles order intake
+  orders:
+    image: orders:latest  # inline comment
+    env_file: common.env  # shared via env_file (provides DB_NAME)
     environment:
-      DB_HOST: shared-db
-      DB_NAME: orders
+      # DB_HOST interpolated from .env — demonstrates ${VAR} handling
+      DB_HOST: ${DB_HOST}
+      # DB_NAME via fallback syntax — resolves to "orders" (also in common.env)
+      DB_NAME: ${DB_NAME:-orders}
+      DEBUG: "false"  # extra noise, not shared as coupling
+
+  reports: # reporting service — parallel comment style
+    image: reports:latest
+    env_file:
+      - common.env  # list form
+    environment:
+      DB_HOST: ${DB_HOST}  # same interpolation as orders — real coupling
+      DB_NAME: ${DB_NAME:-orders}  # same fallback
+      LOG_LEVEL: info  # extra noise
 
   db:
     image: postgres:15
+    # isolated service — should NOT be considered coupled via DB_HOST
     environment:
-      POSTGRES_DB: orders
+      POSTGRES_DB: orders  # different key, same string value — not same resource
