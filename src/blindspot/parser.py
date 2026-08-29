@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Union
+from typing import Dict, List, Optional, Any, Union
 
 import yaml
 from dotenv import dotenv_values  # type: ignore[import-untyped]
@@ -46,12 +46,16 @@ class Service:
     name: str
     environment: Dict[str, Optional[str]] = field(default_factory=dict)
     volumes: List[Volume] = field(default_factory=list)
+    image: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "environment": dict(self.environment),
             "volumes": [v.to_dict() for v in self.volumes],
         }
+        if self.image is not None:
+            d["image"] = self.image
+        return d
 
 
 @dataclass(frozen=True)
@@ -415,8 +419,10 @@ def _merge_projects(projects: List[Project]) -> Project:
                     if key not in seen:
                         seen.add(key)
                         deduped.append(v)
+                # Image: later overrides if not None
+                merged_image = svc.image if svc.image is not None else existing.image
                 merged_services[svc_name] = Service(
-                    name=svc_name, environment=merged_env, volumes=deduped
+                    name=svc_name, environment=merged_env, volumes=deduped, image=merged_image
                 )
     return Project(services=merged_services)
 
@@ -479,6 +485,7 @@ def parse_compose_file(
         raw_env = svc_data.get("environment")
         raw_env_file = svc_data.get("env_file")
         raw_volumes = svc_data.get("volumes")
+        raw_image = svc_data.get("image")
 
         # Priority 1: load env_file (string or list) and merge; explicit env overrides
         env_from_files = _load_service_env_files(raw_env_file, compose_path.parent)
@@ -488,11 +495,13 @@ def parse_compose_file(
         merged_env.update(env_explicit)
         env = merged_env
         volumes = normalize_volumes(raw_volumes, env_vars)
+        image = str(raw_image) if raw_image is not None else None
 
         services[str(svc_name)] = Service(
             name=str(svc_name),
             environment=env,
             volumes=volumes,
+            image=image,
         )
 
     return Project(services=services)
@@ -517,7 +526,9 @@ def parse_compose_string(
             svc_data = {}
         raw_env = svc_data.get("environment")
         raw_volumes = svc_data.get("volumes")
+        raw_image = svc_data.get("image")
         env = normalize_environment(raw_env, env_vars)
         volumes = normalize_volumes(raw_volumes, env_vars)
-        services[str(svc_name)] = Service(name=str(svc_name), environment=env, volumes=volumes)
+        image = str(raw_image) if raw_image is not None else None
+        services[str(svc_name)] = Service(name=str(svc_name), environment=env, volumes=volumes, image=image)
     return Project(services=services)

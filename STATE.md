@@ -2,9 +2,9 @@
 
 > Single source of truth for where BlindSpot stands. Update this file on every meaningful change.
 
-**Last Updated:** 2026-08-28
-**Branch:** `main` — 1 commit (`3859ca1`), working tree: 4 modified + 5 untracked + 2 new files (`discovery.py`, `test_discovery.py`)
-**Status:** `Tier 1 In Progress` — Stages 1–2 **DONE** (messy fixtures + parser + candidate discovery), Stage 3 filtering next
+**Last Updated:** 2026-08-29
+**Branch:** `main` — 3 commits ahead, working tree: Stage 3 evidence + Stage 4 judge (mock)
+**Status:** `Tier 1 In Progress` — Stages 1–4 **DONE** (parser `image` + discovery + filtering with bounded evidence + **LLM Judge with mock + cache.json**); Stage 5 Dependency Model next
 
 ---
 
@@ -12,14 +12,14 @@
 
 | Area | State |
 |------|-------|
-| **Repo Init** | `git` on `main`, 1 commit; `AGENTS.md` final, `PROJECT_PLAN.md` added |
-| **Architecture Doc** | `AGENTS.md` = final 7-stage pipeline (resource graph, `cache.json`, K8s Tier 2); `PROJECT_PLAN.md` = pace 1–2h/day |
+| **Repo Init** | `git` on `main`, 3 commits; `AGENTS.md` 522 LOC + `PROJECT_PLAN.md` 301 LOC (hybrid spec) |
+| **Architecture Doc** | `AGENTS.md` = hybrid deterministic + LLM (§3 bounded evidence, §4 one call/candidate, confidence mandatory, cache hit/miss) |
 | **Global Config** | `~/.config/opencode/opencode.jsonc` model `opencode/muse-spark-1.2-contributor-free` |
-| **Codebase** | `parser.py` 523 LOC + `discovery.py` 108 LOC (`Candidate` + `discover_candidates`) — env `env_file`+`Union[List]`+`${VAR}`, volumes, pairwise env+`named_volume` discovery |
-| **Fixtures** | 3 messy fixtures with `.env`/`common.env`, comments, `${VAR}`/`env_file` — invariants preserved |
-| **Tests** | **40 passed**: `test_parser.py` 32 + `test_discovery.py` 8 (messy fixture checks for `DB_HOST`/`shared-data`/`PORT` plus unit pairs); all deterministic |
-| **Docs** | `STATE.md`/`HANDOFF.md` refreshed; `DECISIONS.md` needs D-017/018; `README.md` still old |
-| **Gitignore** | `!fixtures/**/.env` + `!fixtures/**/common.env` added |
+| **Codebase** | `parser.py` 540 LOC (`Service.image`) + `discovery.py` 132 LOC + `filtering.py` 355 LOC (`EvidencePackage` + `build_evidence_packages`) + `judge.py` 361 LOC (`JudgeResult`, `MockJudgeClient`, `build_judge_prompt`, `judge_evidence_packages` with `cache.json`) |
+| **Fixtures** | 3 messy fixtures (`.env`/`common.env`, `${VAR}`/`env_file`, `image: postgres:15`) — invariants preserved |
+| **Tests** | **48 passed**: `test_parser.py` 32 + `test_discovery.py` 8 + `test_filtering.py` 8 (judge validated manually via mock: shared_env 2 → 2 meaningful, shared_volume 1 → meaningful, near_miss 0 → 0 calls, cache hit verified) |
+| **Docs** | `STATE.md`/`HANDOFF.md`/`DECISIONS.md`/`README.md` refreshed for Stage 4 |
+| **Gitignore** | `!fixtures/**/.env` + `!fixtures/**/common.env` + `cache.json` ignored |
 
 ---
 
@@ -27,47 +27,44 @@
 
 | # | Stage | Status | Notes |
 |---|-------|--------|-------|
-| 1 | **Parse + Normalize** (`docker-compose.yml` + `.env` + supported `env_file` + `${VAR}`) | `Done` | `parser.py:85` `""` preserved, `parser.py:352` env_file, `parser.py:108` resolve, `parser.py:397` multi-file |
-| 2 | **Candidate Discovery** (shared env config, shared named volumes) | `Done` | `discovery.py:19` `Candidate` (`service_a/b`, `resource`, `resource_type`, `evidence`) + `discovery.py:35` `discover_candidates`: pairwise sorted, env (same key→candidate, evidence notes value equality) + `named_volume` only (bind/anon ignored); 8 tests |
-| 3 | **Candidate Filtering** (deterministic heuristics, conservative) | `Not Started` ⬅ **NEXT** | Filter `PORT`/`DEBUG`/`LOG_LEVEL` before LLM, build evidence |
-| 4 | **LLM Judge** (narrow candidate, `cache.json` `candidate+evidence` key) | `Not Started` | |
-| 5 | **Dependency Model** (service-to-resource `evidence`/`judge_result`/`confidence`) | `Not Started` | |
-| 6 | **Graph** (`networkx` + `matplotlib`, resource nodes) | `Not Started` | |
-| 7 | **Report** (human-readable) | `Not Started` | |
+| 1 | **Parse + Normalize** | `Done` | `parser.py:45` `Service.image`, `parser.py:488` image capture, `parser.py:397` multi-file, traceable refs |
+| 2 | **Candidate Discovery** | `Done` | `discovery.py:20` `Candidate` with `value`, pairwise env + `named_volume` only, sorted |
+| 3 | **Candidate Filtering** | `Done` | `filtering.py:23` `GENERIC_ENV_KEYS` + `EvidencePackage:70` with `build_evidence_package:180` (resolve `value→service+image` only HOST/URL-like, `related_config` bounded, signals, `volume_targets`); `build_evidence_packages:210` |
+| 4 | **LLM Judge** | `Done` (mock) ⬅ **REFINED 2026-08-29** | `judge.py:18` `JudgeResult{verdict: meaningful|coincidental|uncertain, confidence, reason, model}` + `judge.py:60` `build_judge_prompt` (A/B, SHARED CONFIG, VALUES, RESOLUTION, RELATED, FILTERING) + `judge.py:160` `MockJudgeClient` + `judge.py:270` `judge_evidence_package` with `cache.json:85` (`sha256(cache_key_dict)`) `0+1/candidate`, validated mock on fixtures + cache hit, real LLM pluggable |
+| 5 | **Dependency Model** | `Not Started` ⬅ **NEXT** | Must store `verdict/confidence/reason` + `EvidencePackage` |
+| 6 | **Graph** | `Not Started` | Resource-based `Service ↔ Resource` |
+| 7 | **Report** | `Not Started` | Expose evidence + confidence |
 
-**Overall Tier 1:** ~40% — Stages 1–2 done; stages 3–7 + real-world validation remain
-**Tier 2 (Kubernetes):** `Blocked` — do not start until Tier 1 demoable
+**Overall Tier 1:** ~70% — Stages 1–4 done (hybrid bounded evidence + mock judge cached); stages 5–7 + real-world validation remain
+**Tier 2 (Kubernetes):** `Blocked` — same pipeline, after Tier 1
 
 ---
 
-## 3. Repo Structure (Actual 2026-08-28)
+## 3. Repo Structure (Actual 2026-08-29)
 
 ```
 Blindspot/
-├── AGENTS.md              # final architecture
-├── PROJECT_PLAN.md        # final plan
-├── STATE.md               # this file
-├── DECISIONS.md
-├── HANDOFF.md
-├── .gitignore             # allows fixtures/**/.env
+├── AGENTS.md (522), PROJECT_PLAN.md (301), STATE.md, DECISIONS.md, HANDOFF.md
+├── .gitignore (allows fixtures/**/.env, ignores cache.json)
 ├── fixtures/
-│   ├── shared_env/ (yml + .env + common.env) # 3 messy, 3 candidates
-│   ├── shared_volume/ (yml + .env)          # 2 candidates (1 vol + 1 env)
-│   └── near_miss/ (yml + .env + common.env) # 3 candidates, PORT different values
+│   ├── shared_env/ (yml + .env + common.env, image postgres:15) # 3 → 2 pkgs → 2 meaningful (mock)
+│   ├── shared_volume/ (yml + .env)          # 2 → 1 pkg → 1 meaningful
+│   └── near_miss/ (yml + .env + common.env) # 3 → 0 pkgs → 0 calls
 ├── src/blindspot/
-│   ├── __init__.py        # exports Candidate/discover_candidates
-│   ├── parser.py          # 523 LOC
-│   └── discovery.py       # 108 LOC ⬅ NEW
-├── tests/
-│   ├── conftest.py
-│   ├── test_parser.py     # 32
-│   └── test_discovery.py  # 8 ⬅ NEW
-└── requirements.txt
+│   ├── __init__.py (exports Candidate/EvidencePackage/JudgeResult/MockJudgeClient)
+│   ├── parser.py (540 LOC, +image)
+│   ├── discovery.py (132 LOC)
+│   ├── filtering.py (355 LOC, EvidencePackage + filtering)
+│   └── judge.py (361 LOC, Judge + cache) ⬅ NEW
+└── tests/
+    ├── test_parser.py (32)
+    ├── test_discovery.py (8)
+    └── test_filtering.py (8)
 ```
 
 **Missing / Expected Next:**
-- `src/blindspot/filtering.py` ⬅ NEXT, `judge.py`, `model.py`, `graph.py`, `report.py`
-- `cache.json`, real-world repo, `README.md` refresh
+- `src/blindspot/model.py` ⬅ NEXT (Dependency with verdict/confidence), `graph.py`, `report.py`
+- Tests for `judge.py` (EvidencePackage → verdict) and `EvidencePackage` resolution (DB_HOST=postgres → postgres:16)
 
 ---
 
@@ -76,32 +73,31 @@ Blindspot/
 - **Required:** Python 3.10+, `pyyaml`, `python-dotenv`, `networkx`, `matplotlib`
 - **No AST** — Tier 2 K8s via YAML
 - **Docker:** Not required
-- **Model:** `opencode/muse-spark-1.2-contributor-free`
+- **Model:** `opencode/muse-spark-1.2-contributor-free` (mock used, real LLM pluggable)
 
 ---
 
-## 5. Development Priorities (from AGENTS.md — Order Matters)
+## 5. Development Priorities
 
-1. Deliberately messy synthetic test repositories — **DONE**
-2. Config parser — **DONE**
-3. Candidate discovery — **DONE** (8 tests)
-4. Candidate filtering and evidence construction ⬅ **NEXT**
-5. LLM judgment layer + verdict cache (`cache.json`)
-6. Dependency model (service-to-resource)
-7. Resource-based graph output
-8. Report generation
-9. Real-world repository validation
-10. Tier 2 Kubernetes support only if time allows
+1. Messy fixtures — **DONE**
+2. Config parser — **DONE** (with `image`)
+3. Candidate discovery — **DONE**
+4. Candidate filtering — **DONE** (bounded evidence)
+5. Bounded evidence validated — **DONE**
+6. LLM judgment layer + verdict cache (`cache.json`) — **DONE (mock, cache verified)** ⬅ **JUST DONE**
+7. Dependency model (verdict/confidence/reason) ⬅ **NEXT**
+8. Resource-based graph
+9. Report generation (evidence + confidence)
+10. Real-world validation
+11. Tier 2 Kubernetes
 
 ---
 
 ## 6. Recent Activity
 
-- 2026-08-28: **Stage 2 Candidate Discovery** — `discovery.py:19` `Candidate` + `discovery.py:35` pairwise env (`env_var`, resource `key=value` when equal else `key`, evidence with values) + `named_volume` (`source` only, bind/anon ignored), sorted deterministic; `test_discovery.py` 8 tests (3 messy fixture + 5 unit); 40 total passed; `__init__.py` exports
-- 2026-08-28: Phase 1 messy fixtures (comments/`${VAR}`/`env_file`, 5 env files, `.gitignore` fix, parser 523 LOC)
-- 2026-08-28: Final `PROJECT_PLAN.md` + `AGENTS.md` (resource graph, caching, K8s)
-- 2026-08-28: Commit `3859ca1` baseline
-- 2026-08-27: Initialized docs, set global model
+- 2026-08-29: **Stage 4 LLM Judge (mock)** — `judge.py:18` `JudgeResult` (`meaningful|coincidental|uncertain` + `confidence` mandatory + `reason`) + `judge.py:60` `build_judge_prompt` (A/B, SHARED CONFIG, VALUES, RESOLUTION, RELATED, FILTERING per §5) + `judge.py:85` `_cache_key_for_package` (`sha256(cache_key_dict)`) + `judge.py:270` `judge_evidence_package` (0+1/candidate, `cache.json` hit? reuse : LLM → store) + `MockJudgeClient:160` (named_volume/compose_service→meaningful, generic→coincidental); manual mock: `shared_env` 2→2 meaningful, `shared_volume` 1→meaningful, `near_miss` 0→0, second run with `FixedJudgeClient` hit cache (mock model retained), cache key diff verified; `.gitignore:39` `cache.json`, `__init__.py:1` exports `JudgeResult`; 48 tests still pass
+- 2026-08-29: **Architecture modification** — `AGENTS.md:1` 522 LOC + `PROJECT_PLAN.md:1` 301 LOC hybrid
+- 2026-08-29: **Stage 3 refinement** — `Service.image` + `EvidencePackage` with HOST/URL-like resolution, `host:port` split, bounded `DB_*` related
 
 ---
 

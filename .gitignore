@@ -34,3 +34,5 @@ Thumbs.db
 *.png
 .graph/
 report/
+cache.json
+.cache/

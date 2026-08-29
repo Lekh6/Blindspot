@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lesson 0001 — The Heuristic Stage Before the Judge</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<p class="muted"><a href="../MISSION.md">Mission</a> · <a href="../reference/filtering-cheatsheet.html">Reference: Cheat Sheet</a> · Lesson 0001 of BlindSpot Pipeline</p>
+
+<h1>0001 — The Heuristic Stage Before the Judge</h1>
+<p class="muted">Stage 3 <strong>Candidate Filtering</strong> — the gate between <code>discovery.py:40</code> (finds everything shared) and <code>judge.py</code> (asks LLM "real coupling?"). 5-minute lesson, one tangible win: you can predict what gets dropped before an LLM is ever called.</p>
+
+<div class="diag" aria-label="pipeline positions">
+<span>1. Parse</span><span class="arrow">→</span><span>2. Discovery</span><span class="arrow">→</span><span style="border-color:#0b4f6c; font-weight:600;">3. Filtering ★</span><span class="arrow">→</span><span>4. LLM Judge</span><span class="arrow">→</span><span>5. Model</span><span class="arrow">→</span><span>6. Graph</span>
+</div>
+
+<h2>Why this stage exists</h2>
+<p>Discovery is greedy: same <code>PORT</code> key with <code>8000 vs 9000</code> still becomes a <code>Candidate</code> with <code>value=None</code> and evidence <code>"different values"</code> (<code>discovery.py:82</code>). If you sent that to an LLM you'd pay for every generic coincidence. Filtering applies <strong>deterministic, cheap heuristics</strong> first — <code>AGENTS.md:65</code> "Filtering Before LLM" — and builds evidence for what remains.</p>
+<div class="card">Core principle: <strong>Shared Names ≠ Dependencies</strong> (<code>AGENTS.md:52</code>, <code>DECISIONS.md:D-005</code>). Identical <code>PORT</code>, <code>DEBUG</code>, <code>LOG_LEVEL</code> are usually coincidence, not coupling.</div>
+
+<h2>What it does (exact rules)</h2>
+<p>Input: <code>List[Candidate]</code> with <code>resource</code> (key/name) + <code>value</code> (shared value or <code>None</code>). Output: kept list, each with <code>evidence + " | filter: kept — &lt;reason&gt;"</code>.</p>
+<pre>// src/blindspot/filtering.py:41  _decide(candidate)
+if resource_type == "named_volume"               → KEEP   // strong signal
+if env_var and value is None and "different values" in evidence → DROP
+if env_var and resource in GENERIC_ENV_KEYS     → DROP   // PORT, DEBUG, LOG_LEVEL, APP_ENV, DATA_PATH, SHARED_*
+if env_var and value is not None and specific   → KEEP + enrich
+else if both None                               → KEEP weak // needs LLM</pre>
+<p class="muted">Full table: <a href="../reference/filtering-cheatsheet.html">Reference cheat sheet</a>. List at <code>filtering.py:12</code>.</p>
+
+<h2>See it on your fixtures</h2>
+<pre>shared_env:  3 discovered (DB_HOST, DB_NAME, SHARED_EXTRA) → filter → 2 kept (DB_HOST, DB_NAME)
+shared_volume: 2 (shared-data volume + DATA_PATH env)      → 1 kept (shared-data)
+near_miss:  3 (PORT different-values + APP_ENV + SHARED_NOISE) → 0 kept  ← the whole point</pre>
+<p>Run it yourself:</p>
+<pre>PYTHONPATH=src python -c "
+from blindspot.parser import parse_compose_file
+from blindspot.discovery import discover_candidates
+from blindspot.filtering import filter_candidates, filter_with_reasons
+p=parse_compose_file('fixtures/near_miss/docker-compose.yml')
+cands=discover_candidates(p)
+for c,keep,reason in filter_with_reasons(cands):
+    print(keep, c.resource, c.value, '—', reason)
+"</pre>
+
+<h2>Try it — predict the filter</h2>
+<p class="muted">Retrieval practice: click what filtering does (answers equal length by design).</p>
+
+<div class="quiz" id="q1">
+<h3>Q1. Two services both define <code>DB_HOST=shared-db</code>. What happens?</h3>
+<button data-correct="true">Kept — specific config, LLM judges next</button>
+<button data-correct="false">Dropped — generic noise, ignored always</button>
+<button data-correct="false">Kept — named volume coupling signal</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q2">
+<h3>Q2. Both define <code>PORT</code> but <code>8000 vs 9000</code> (value None, evidence "different values")</h3>
+<button data-correct="false">Kept — specific config, needs LLM check</button>
+<button data-correct="true">Dropped — same key different values coincide</button>
+<button data-correct="false">Dropped — generic volume name mismatch</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q3">
+<h3>Q3. Both mount <code>shared-data:/data</code> (type named)</h3>
+<button data-correct="false">Dropped — anonymous mount ignored case</button>
+<button data-correct="false">Dropped — generic key noise filtered</button>
+<button data-correct="true">Kept — named volume strong coupling</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q4">
+<h3>Q4. Why is filtering "conservative"? (from DECISIONS.md:D-020)</h3>
+<button data-correct="false">It removes all env vars without calling LLM</button>
+<button data-correct="true">It drops obvious noise, not "never coupling"</button>
+<button data-correct="false">It keeps only volumes for graph display</button>
+<div class="feedback"></div>
+</div>
+
+<div class="card">
+<strong>Win check:</strong> You can now trace any <code>Candidate</code> through <code>_decide</code> and state why <code>near_miss</code> ends at 0 kept before an LLM is billed — that's the heuristic stage's job.
+</div>
+
+<h2>Primary source for this lesson</h2>
+<p>Read <code>src/blindspot/filtering.py:1</code> (110 LOC) and <code>tests/test_filtering.py:1</code> (8 tests). They are the most trustworthy spec — no external guessing. Background on heuristics: <a href="https://en.wikipedia.org/wiki/Heuristic_(computer_science)">Wikipedia: Heuristic (CS)</a>.</p>
+
+<h2>What's next</h2>
+<p>Stage 4 LLM Judge — narrow prompt on <em>filtered</em> candidates + evidence, cached in <code>cache.json</code> with key = hash(candidate+evidence), run &gt;1× for consistency. <a href="0002-llm-judge-preview.html">Lesson 0002 → Judge preview</a> | <a href="../reference/filtering-cheatsheet.html">Reference cheat sheet</a></p>
+
+<p class="muted no-print">Stuck? Ask me — I'm your teacher for this workspace. What about <code>GENERIC_ENV_KEYS</code> or <code>value=None</code> is still fuzzy?</p>
+
+<script>
+document.querySelectorAll('.quiz').forEach(q => {
+  const fb = q.querySelector('.feedback');
+  q.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const ok = btn.dataset.correct === "true";
+      fb.textContent = ok ? "✓ Correct." : "✗ Not quite — re-read the decision table above.";
+      fb.style.color = ok ? "#0b6f35" : "#8a1a1a";
+      q.querySelectorAll('button').forEach(b=> b.style.opacity = b===btn ? "1" : "0.6");
+    });
+  });
+});
+</script>
+</body>
+</html>

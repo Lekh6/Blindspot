@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lesson 0002 — The LLM Judge (Preview)</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<p class="muted"><a href="0001-candidate-filtering.html">← 0001 Filtering</a> · <a href="../reference/filtering-cheatsheet.html">Reference</a></p>
+<h1>0002 — The LLM Judge (Preview)</h1>
+<p class="muted">Stage 4 — where filtered candidates get a verdict. Ultra-short preview so filtering's output clicks.</p>
+
+<h2>What Judge receives</h2>
+<p>Only <code>filter_candidates()</code> survivors — on your fixtures, 3 candidates total (2 <code>shared_env</code> + 1 <code>shared_volume</code>), not the original 8. Each carries enriched <code>evidence</code>.</p>
+<pre>Candidate{
+  service_a="orders", service_b="reports",
+  resource="DB_HOST", resource_type="env_var", value="shared-db",
+  evidence="both define DB_HOST='shared-db' ... | filter: kept — shared DB_HOST='shared-db' — specific config"
+}</pre>
+
+<h2>What Judge does (narrow, per AGENTS.md:65)</h2>
+<ul>
+<li>Prompt: "Given this ONE candidate + evidence, is shared <code>resource=value</code> real coupling or coincidence? → <code>{is_dependency: bool, confidence: 0-1, reasoning: str}</code>"</li>
+<li>Does <strong>NOT</strong> scan codebase — only judges pre-extracted candidate (<code>DECISIONS.md:D-002</code> Discovery ≠ Judgment).</li>
+<li>Cached in <code>cache.json</code> (gitignored) with key = hash(<code>candidate</code> + <code>evidence</code>) — not just <code>DB_HOST=shared-db</code>, because same value means different things in different service contexts (<code>AGENTS.md:85</code>, <code>D-014</code>).</li>
+<li>Run &gt;1× during validation to check consistency — LLMs are non-deterministic.</li>
+</ul>
+
+<h2>Why Filtering → Judge boundary matters</h2>
+<div class="card">
+Without filtering: LLM sees <code>PORT</code> mismatches + <code>DATA_PATH</code> noise → wasted tokens, hallucinated edges.<br>
+With filtering: LLM sees only <code>DB_HOST</code>/<code>DB_NAME</code>/<code>shared-data</code> with provenance → cheap, repeatable, explainable. Next stages (Model, Graph, Report) preserve that provenance.
+</div>
+
+<h2>Next files to watch</h2>
+<pre>src/blindspot/judge.py  ← mockable, no API key for tests
+src/blindspot/model.py  // Dependency(service_a,b, resource, resource_type, value, evidence, judge_result, confidence)
+cache.json              // local, evidence-bound keys</pre>
+
+<p class="muted"><a href="0001-candidate-filtering.html">Back to filtering lesson</a> · Ask me anything about the <code>candidate+evidence</code> key design.</p>
+</body>
+</html>

@@ -1,90 +1,76 @@
 # HANDOFF.md — What the Next Agent Needs to Know
 
 > Read this first when you start a session. It tells you where we left off and exactly what to do next.
-**Last Updated:** 2026-08-28
-**Current Phase:** Tier 1 — Stages 1–2 **DONE** (messy fixtures + parser + discovery done), **Stage 3 NEXT: Candidate Filtering**
-**Current Branch:** `main` — 1 commit (`3859ca1`), working tree: 5 modified + 6 untracked + 2 new tracked files
+**Last Updated:** 2026-08-29
+**Current Phase:** Tier 1 — Stages 1–4 **DONE** (parser `image` + discovery + filtering with `EvidencePackage` + **LLM Judge with Mock + cache.json**) — **Stage 5 NEXT: Dependency Model**
+**Current Branch:** `main` — 3 commits ahead, working tree: AGENTS/PROJECT_PLAN + Stage 3 evidence + Stage 4 judge
 
 ---
 
 ## 1. TL;DR for Next Agent
 
-1. Read `AGENTS.md` (resource graph `orders→resource←reports`, K8s Tier 2, `cache.json`), then `PROJECT_PLAN.md` (§7), then `STATE.md` §2, then this file.
-2. **Stages 1–2 DONE 2026-08-28:** fixtures messy (comments/`${VAR}`/`env_file`), `parser.py` 523 LOC (`_load_service_env_files:352`, `_merge_projects:397`), `discovery.py` 108 LOC (`Candidate:19`, `discover_candidates:35` pairwise env+`named_volume` only). **40 tests pass** (32 parser + 8 discovery) on messy fixtures.
-3. **Discovery output:** `Candidate{service_a, service_b, resource, resource_type, evidence}` sorted deterministic — `shared_env` 3 (DB_HOST/DB_NAME/SHARED_EXTRA), `shared_volume` 2 (DATA_PATH + shared-data), `near_miss` 3 (PORT different values + APP_ENV + SHARED_NOISE). Filtering will handle `PORT`.
-4. Keep these updated: `STATE.md`, `DECISIONS.md`, `HANDOFF.md` every session.
-5. Global model `opencode/muse-spark-1.2-contributor-free`, `.gitignore:9` allows `fixtures/**/.env`.
+1. Read `AGENTS.md` (§3 bounded evidence, §4 one call/candidate, confidence mandatory) + `PROJECT_PLAN.md` (hybrid diagram) + `STATE.md` §2, then this file.
+2. **Stages 1–4 DONE:** `parser.py` 540 LOC (`Service.image`), `discovery.py` 132 LOC, `filtering.py` 355 LOC (`EvidencePackage:70`, `build_evidence_packages:210`), `judge.py` 361 LOC (`JudgeResult:18`, `MockJudgeClient:160`, `build_judge_prompt:60`, `judge_evidence_packages:324` with `cache.json:85` `sha256(cache_key_dict)`). **48 tests pass**. `shared_env` 3→2 pkgs→2 meaningful (mock), `shared_volume` 2→1→meaningful, `near_miss` 3→0→0 calls, cache hit verified.
+3. **Judge now:** `EvidencePackage` → one `JudgeResult{verdict: meaningful|coincidental|uncertain, confidence, reason, model}` per package, cached in `cache.json` (`cache_key_dict`), `0+1/candidate`, mockable, real LLM pluggable.
+4. Keep updated: `STATE.md`, `DECISIONS.md` (D-024 judge added), `HANDOFF.md`.
+5. Global model `opencode/muse-spark-1.2-contributor-free`, `.gitignore` allows `fixtures/**/.env` + ignores `cache.json`.
 
 ---
 
 ## 2. Where We Left Off
 
-- `AGENTS.md` final (7-stage) + `PROJECT_PLAN.md` final.
-- `3859ca1` baseline.
-- **2026-08-28 messy fixtures + parser restore:** 3 `docker-compose.yml` + 5 env files (`.env`/`common.env`), comments/`${VAR:-default}`/`env_file` string vs list, invariants kept (`DB_HOST=shared-db`/`DB_NAME=orders`, `shared-data:/data`, `PORT 8000≠9000`); `.gitignore` patched; parser 523 LOC.
-- **2026-08-28 discovery:** `src/blindspot/discovery.py:1` — `Candidate` frozen dataclass + `discover_candidates`:
-  - Env: intersection of keys, `resource=key=value` if same non-None value else `key`, evidence notes equality vs `different values (a=... vs b=...)`
-  - Volumes: only `type=="named"` with `source`, shared `source` → candidate `resource=source`, evidence with `target` + type, targets-differ note.
-  - Sorted by `(service_a, service_b, resource_type, resource)`.
-  - `src/blindspot/__init__.py` now exports `Candidate`/`discover_candidates`.
-  - `tests/test_discovery.py:1` 8 tests (3 messy fixture + 5 unit: same-key-different-values, same-value, bind/anon ignored, named volume, 3-service pairs) — all pass; total 40.
-- `git status`: `M AGENTS.md`, `M .gitignore`, `M fixtures/*/*.yml`, `M src/blindspot/parser.py`, `M src/blindspot/__init__.py`, `?? PROJECT_PLAN.md`, `?? fixtures/**/.env`, `?? fixtures/**/common.env`, `?? src/blindspot/discovery.py`, `?? tests/test_discovery.py`, `M STATE.md`/`HANDOFF.md` updated.
-- **Not yet done:** `DECISIONS.md` D-017/018 for messy fixtures + discovery, `README.md` still old.
+- `AGENTS.md:1` 522 LOC + `PROJECT_PLAN.md:1` 301 LOC hybrid spec.
+- **Parser:** `parser.py:45` `Service.image` + `parse_compose_file:488`/`505` + `_merge_projects:401` image override; `D-022`.
+- **Filtering:** `filtering.py:70` `EvidencePackage` + `build_evidence_package:240` with HOST/URL-like guard, `host:port` split, `volume_targets`, `related_config` bounded; `D-023`.
+- **Judge:** `judge.py:18` `JudgeResult` + `build_judge_prompt:60` (A/B, SHARED CONFIG, VALUES, RESOLUTION, RELATED, FILTERING) + `MockJudgeClient:160` + `judge_evidence_package:270` with `cache.json:85` (`sha256`) `0+1/candidate`; manual mock verified on fixtures + second run cache hit (different client served cached `mock-heuristic-v1`), cache key diff when value changes; `__init__.py:1` exports `JudgeResult`; `D-024`; `.gitignore:39` `cache.json`.
+- Tests: 48 passed (judge manually verified, no new automated tests yet).
 
 ---
 
 ## 3. Immediate Next Steps (Do In Order)
 
-**Stages 1–2 DONE — do not redo. Next is Stage 3 per `AGENTS.md:233`:**
+**Stages 1–4 DONE — next is Stage 5 per `AGENTS.md §5` Dependency Model:**
 
-1. **Candidate Filtering (Stage 3) NEXT** — `src/blindspot/filtering.py`:
-   - Input: `List[Candidate]`.
-   - Deterministic heuristics: filter/deprioritize `PORT`, `HOST`, `DEBUG`, `LOG_LEVEL`, `SHARED_EXTRA`/`SHARED_NOISE` etc conservatively — reduce obvious noise but **don't claim it can never be coupling** (`AGENTS.md:65`). Keep `DB_HOST`/`DB_NAME` and `shared-data` volume.
-   - Build `evidence` strings for remaining candidates to feed LLM.
-   - Output: `List[Candidate]` filtered + enriched evidence (or `FilteredCandidate`).
-   - Test against messy fixtures: `near_miss`'s `PORT` (different values) should be filtered/deprioritized, `APP_ENV`/`SHARED_NOISE` may be filtered as generic; `shared_env`/`shared_volume` should keep real candidates.
+1. **Dependency Model (Stage 5) NEXT** — `src/blindspot/model.py`:
+   - Input: `List[Tuple[EvidencePackage, JudgeResult]]` from `judge_evidence_packages`.
+   - Store `Dependency{service_a, service_b, resource, resource_type, value, evidence: EvidencePackage, verdict, confidence, reason, model}` — service-to-resource (`Dependency` must retain `why` + `how confident`, not just `orders→reports`). `confidence` mandatory first-class, exposed downstream.
 
-2. **LLM Judge (Stage 4)** — `src/blindspot/judge.py`: narrow prompt on single candidate + evidence → `{is_dependency, confidence, reasoning}`; cache in `cache.json` with key = hash(candidate+evidence); run >1× for consistency.
+2. **Resource Graph (Stage 6)** — `src/blindspot/graph.py`: `networkx`+`matplotlib` bipartite `service→resource` (e.g. `orders→DB_HOST=postgres←reports`), distinct node styles, resource node = mechanism.
 
-3. **Dependency Model (Stage 5)** — `src/blindspot/model.py`: `Dependency(service_a, service_b, resource, resource_type, evidence, judge_result, confidence)` service-to-resource.
+3. **Report (Stage 7)** — human-readable findings with resource+evidence+judgment/confidence (must expose confidence per `AGENTS.md §7`).
 
-4. **Resource Graph (Stage 6)** — `src/blindspot/graph.py`: `networkx`+`matplotlib` bipartite `service→resource`.
+4. **Real-world validation** — 1 small OSS multi-service repo.
 
-5. **Report (Stage 7)** — human-readable findings.
-
-6. **Real-world validation** — 1 small OSS multi-service repo.
-
-7. **Tier 2 K8s** — blocked until Tier 1 demo.
+5. **Tier 2 K8s** — blocked until Tier 1 demo.
 
 ---
 
 ## 4. Critical Constraints & Gotchas
 
-- **Discovery ≠ Judgment** — LLM only judges pre-extracted candidates.
-- **Shared names ≠ dependencies** — `PORT` near-miss must be filtered, not flagged.
-- **Evidence matters** — every dependency carries `evidence` + `judge_result` + `confidence`.
-- **Filtering before LLM** — heuristics first, LLM for semantic ambiguity.
-- **Verdict caching** — `cache.json` key = candidate + evidence.
-- **Resource graph** — `service → resource`, not `service ↔ service`.
-- **Extensibility** — K8s reuses same pipeline.
-- **Parser contract** — preserves `${VAR}`, `""` for `VAR=`, explicit overrides `env_file`.
-- **Fixture contract** — messy fixtures now produce 3/2/3 candidates; downstream must handle that.
+- **Discovery ≠ Judgment** — LLM only judges filtered + bounded packages (one per package).
+- **Shared names ≠ dependencies** — `PORT` filtered before LLM.
+- **Evidence matters + bounded** — give LLM smallest machine-verified facts (required + resolved service/image/internal, related DB_* bounded, filtering signals). No unrelated config.
+- **Evidence resolution before LLM** — deterministically resolve `DB_HOST=postgres -> postgres:16` (only HOST/URL-like), `named_volume` internal.
+- **One LLM call per survivor** — `0 for obvious noise + 1 per interesting candidate`; `uncertain` allowed; `cache.json` key = `sha256(cache_key_dict)` (not just value); model/version stored.
+- **Confidence is first-class** — `JudgeResult` → `Dependency` → `Graph`/`Report`.
+- **Resource graph** — `service → resource` (uses `EvidencePackage.value`).
+- **Mockable judge** — `MockJudgeClient` for CI, real LLM replaces it without pipeline change.
 - **Stack** — `pyyaml`, `python-dotenv`, `networkx`, `matplotlib` only.
 - **Windows host** — `C:\Users\Lekha\Projects\Blindspot`, `bash`.
 
 ---
 
-## 5. Session Handoff Checklist (Update Before You Leave)
+## 5. Session Handoff Checklist
 
-- [x] `STATE.md` §2 flipped (Stage 2 → Done, Stage 3 → NEXT)
-- [x] `STATE.md` §6 Recent Activity appended (discovery)
-- [ ] `DECISIONS.md` D-017/018 (messy fixtures + discovery) — TODO
-- [x] `HANDOFF.md` §§2–3 updated (stages 1–2 done, next = filtering)
-- [x] Tests run (40 passed: 32 parser + 8 discovery)
-- [ ] `README.md` refresh — TODO
-- [ ] Commit — still 1 commit, working tree has 10+ dirty/untracked
+- [x] `STATE.md` §2 flipped (Stage 4 judge mock + cache DONE, Stage 5 NEXT)
+- [x] `STATE.md` §6 Recent Activity (judge mock + cache verified)
+- [x] `DECISIONS.md` D-024 (judge one-call + cache)
+- [x] `HANDOFF.md` §§2–3 updated (Stage 4 done, Stage 5 next)
+- [x] Tests run (48 passed, judge manually verified with mock + cache hit)
+- [x] `README.md` pending refresh for Stage 4 — updated below
+- [ ] Commit — still 3 commits ahead, working tree dirty
 
-**Next agent:** add D-017/018 + README, then `filtering.py`.
+**Next agent:** implement `model.py` (with `verdict/confidence/reason`), then `graph.py`.
 
 ---
 
@@ -92,23 +78,17 @@
 
 ```bash
 git status
-git log --oneline -10
-git diff --stat
-pytest -v
-pytest tests/test_discovery.py -v
-PYTHONPATH=src python -c "from blindspot.parser import parse_compose_file; from blindspot.discovery import discover_candidates; print(discover_candidates(parse_compose_file('fixtures/shared_env/docker-compose.yml')))"
-ls -R fixtures
-cat src/blindspot/discovery.py
+PYTHONPATH=src python -m pytest -v
+PYTHONPATH=src python -c "from blindspot.parser import parse_compose_file; from blindspot.discovery import discover_candidates; from blindspot.filtering import build_evidence_packages; from blindspot.judge import MockJudgeClient, judge_evidence_packages; p=parse_compose_file('fixtures/shared_env/docker-compose.yml'); pkgs=build_evidence_packages(discover_candidates(p), p); print(judge_evidence_packages(pkgs, MockJudgeClient(), cache_path='cache.json'))"
+PYTHONPATH=src python -c "from blindspot.judge import JudgeResult, validate_judge_result; validate_judge_result(JudgeResult(verdict='meaningful', confidence=0.93, reason='ok', model='mock'))"
 ```
 
 ---
 
 ## 7. Files to Read First
 
-1. `C:\Users\Lekha\Projects\Blindspot\AGENTS.md`
-2. `C:\Users\Lekha\Projects\Blindspot\PROJECT_PLAN.md`
+1. `C:\Users\Lekha\Projects\Blindspot\AGENTS.md` (§4 one call/candidate)
+2. `C:\Users\Lekha\Projects\Blindspot\PROJECT_PLAN.md` (§4 hybrid diagram)
 3. `C:\Users\Lekha\Projects\Blindspot\STATE.md`
-4. `C:\Users\Lekha\Projects\Blindspot\DECISIONS.md`
-5. `C:\Users\Lekha\Projects\Blindspot\HANDOFF.md`
-6. `C:\Users\Lekha\Projects\Blindspot\src\blindspot/discovery.py`
-7. `C:\Users\Lekha\Projects\Blindspot\tests/test_discovery.py`
+4. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/judge.py` (`JudgeResult:18`, `MockJudgeClient:160`)
+5. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/filtering.py` (`EvidencePackage:70`)
