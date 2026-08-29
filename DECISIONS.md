@@ -2,7 +2,7 @@
 
 > Why BlindSpot looks the way it does. Append-only log — never delete, only supercede with new entry.
 
-**Last Updated:** 2026-08-28
+**Last Updated:** 2026-08-29
 
 ---
 
