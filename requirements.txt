@@ -11,4 +11,6 @@ pyparsing==3.3.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.3
 PyYAML==6.0.3
+google-genai==0.8.0
+openai==1.102.0
 six==1.17.0

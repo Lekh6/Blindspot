@@ -2,7 +2,7 @@
 
 > Why BlindSpot looks the way it does. Append-only log — never delete, only supercede with new entry.
 
-**Last Updated:** 2026-08-29
+**Last Updated:** 2026-09-04
 
 ---
 
@@ -178,6 +178,22 @@
 - **Decision:** Add `src/blindspot/judge.py:18` `JudgeResult{verdict: meaningful|coincidental|uncertain, confidence:0-1, reason, model}` + `judge.py:60` `build_judge_prompt` (A/B, SHARED CONFIG, VALUES, RESOLUTION, RELATED, FILTERING per mod §5) + `judge.py:85` `_cache_key_for_package` (`sha256(cache_key_dict)`) + `judge.py:270` `judge_evidence_package`/`judge_evidence_packages` (0+1/candidate, `cache.json` hit? reuse : LLM → store, mockable). Provide `MockJudgeClient:160` (named_volume/compose_service→meaningful, generic→coincidental, DB_* external→meaningful else uncertain) and `FixedJudgeClient:200` for tests; validate with spec §6 `confidence` mandatory.
 - **Context:** Spec requires `cache.json` candidate+evidence-aware key (not just `value`), structured output with schema validation, single LLM call per evidence item, pluggable client so CI needs no API key. Prior stages now produce `EvidencePackage` ready for narrow prompt.
 - **Consequence:** `judge.py` 361 LOC; manual mock: `shared_env` 2→2 meaningful (`DB_HOST/DB_NAME external` 0.78), `shared_volume` 1→meaningful (`named_volume` 0.92), `near_miss` 0→0 calls, second run with different client served from cache (mock model retained), cache key changes when value changes; `.gitignore:39` `cache.json`, `__init__.py:1` exports `JudgeResult`; 48 tests still pass; real LLM (OpenAI/Claude) can replace `MockJudgeClient` without changing pipeline.
+- **Superceded by D-025 (real provider-agnostic, mocks removed)**
+
+## D-025: Stage 4 LLM Judge — Real Provider-Agnostic (Gemini + OpenRouter Nemotron Ultra)
+
+- **Date:** 2026-09-04
+- **Decision:** Replace mocks with real provider-agnostic judge: `src/blindspot/judge.py:31` `GEMINI_DEFAULT_MODEL gemini-3.7-flash`/`GEMINI_FAILSAFE_MODEL gemini-3.1-flash-lite` + `judge.py:36` `OPENROUTER_DEFAULT_MODEL nvidia/nemotron-3-ultra-550b-a55b` + `DEFAULT_MODEL` = ultra + `judge.py:259` `GeminiJudgeClient` (google-genai, `GenerateContentConfig` with `ThinkingConfig(thinking_budget)` low1024/medium4096, `response_mime_type application/json`, lazy `type: ignore` import, fallback to flash-lite) + `judge.py:475` `OpenRouterJudgeClient` (openai SDK, `base_url https://openrouter.ai/api/v1`, `model nvidia/nemotron-3-ultra-550b-a55b`, `response_format json_object`, `OPENROUTER_MAX_TOKENS` low512/medium1024, regex JSON extraction for Nemotron `Here's a thinking process` prefix) + `judge.py:226` `failsafe_result` (`uncertain 0.5`, `FAILSAFE_MODEL`) + `judge.py:81` `build_judge_prompt` remains provider-agnostic + `judge.py:582` `judge_evidence_package` (`0+1/candidate`, `cache.json` `sha256`). Remove `MockJudgeClient`/`FixedJudgeClient`; add `placeholder_future_judge`. Store keys in `.env` (`GEMINI_API_KEY` + `OPENROUTER_API_KEY`, gitignored), `requirements.txt` `google-genai==0.8.0` + `openai==1.102.0`.
+- **Context:** Prior D-024 was mock-only; spec requires real LLM judgment with `uncertain` allowed and `confidence` mandatory. User requires Gemini not privileged — prompt/architecture must remain model-agnostic, providers pluggable. Nemotron Lightning free failed `json_object` (returned reasoning text), fixed via regex extraction. Testing needs low/medium thinking dynamically via `set_thinking_level()`.
+- **Consequence:** `judge.py` 361→687 LOC; `__init__.py` exports `GeminiJudgeClient` + `OpenRouterJudgeClient`; sampleruns: artificial 3 pkgs all `meaningful 0.9-0.95` on both Gemini 3.7 and Nemotron Ultra (low), fixtures `shared_env 2→2 meaningful 0.9 (Ultra)`, `shared_volume 1→0.95`, `near_miss 0`; cache hit verified; 48 tests still pass; LSP `type: ignore` silences `google.genai`/`openai` missing stubs but runtime imports ok; real LLM replaces mock without pipeline change, provider switch via `DEFAULT_MODEL` or client choice.
+- **Supercedes:** D-024 (mock judge)
+
+## D-026: Stage 5 Dependency Model — Service-to-Resource with Model Hidden
+
+- **Date:** 2026-09-04
+- **Decision:** Add `src/blindspot/model.py:27` `Dependency{service_a/b, resource, resource_type, value, evidence: EvidencePackage, verdict, confidence, reason, _model(hidden), cache_key, created_at}` frozen + `model.py:108` `DependencyModel{dependencies: List[Dependency], sorted (service_a, service_b, resource_type, resource), meaningful_only(), to_list()/to_log_list(), to_json(), save(), from_judgments:141, from_list, build_dependency_model:158}`. Pipeline `Stage 4 List[Tuple[EvidencePackage,JudgeResult]] → Stage 5 DependencyModel` via `Dependency.from_evidence_judgment:52` (validates `JudgeResult`, `hashlib.sha256(cache_key_dict)`, `logging.debug` with model). External `to_dict:67` omits `_model` (`field(repr=False, compare=False)`) — user never sees provider; internal `to_log_dict:77` adds `{"_log": {model, cache_key, created_at}}` for audit (`cache.json` + `logging.getLogger("blindspot.model")`). `__init__.py` exports `Dependency`/`DependencyModel`/`build_dependency_model`.
+- **Context:** `AGENTS.md §5` requires service-to-resource with evidence + verdict/confidence/reason preserved for Stage 6 Graph (bipartite, no service→service edge) and Stage 7 Report. User instruction: do not expose `model` in external dependency output — log internally only. Prior `Dependency` spec implied `model` external; this corrects to model-blind external, model-audited internal, preserving provider-agnostic prompt/architecture.
+- **Consequence:** `model.py` 160 LOC; verified fixtures `shared_env 2→2 deps`, `shared_volume 1`, `near_miss 0`, artificial 3 pkgs, `external to_dict` `model` leak `False`, `to_log_dict` retains `nvidia/nemotron-3-ultra-550b-a55b`/`gemini-3.1-flash-lite`; `DependencyModel` sorted deterministically; 48 tests still pass; Stage 6 Graph will consume `DependencyModel` (not raw `JudgeResult`), Stage 7 Report will expose confidence without model.
 
 ---
 

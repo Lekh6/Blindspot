@@ -1,4 +1,4 @@
-"""BlindSpot — Hidden Dependency Discovery (Stages 1-4, hybrid)."""
+"""BlindSpot — Hidden Dependency Discovery (Stages 1-5, hybrid)."""
 
 from .discovery import Candidate, discover_candidates
 from .filtering import (
@@ -10,13 +10,24 @@ from .filtering import (
     filter_with_reasons,
 )
 from .judge import (
+    DEFAULT_MODEL,
+    FAILSAFE_MODEL,
+    GEMINI_DEFAULT_MODEL,
+    GEMINI_FAILSAFE_MODEL,
+    OPENROUTER_BASE_URL,
+    OPENROUTER_DEFAULT_MODEL,
+    OPENROUTER_MAX_TOKENS,
+    THINKING_BUDGETS,
+    GeminiJudgeClient,
     JudgeResult,
-    MockJudgeClient,
-    FixedJudgeClient,
+    OpenRouterJudgeClient,
     build_judge_prompt,
+    failsafe_result,
     judge_evidence_package,
     judge_evidence_packages,
+    placeholder_future_judge,
 )
+from .model import Dependency, DependencyModel, build_dependency_model
 from .parser import (
     Project,
     Service,
@@ -31,17 +42,29 @@ from .parser import (
 
 __all__ = [
     "Candidate",
+    "Dependency",
+    "DependencyModel",
     "EvidencePackage",
     "JudgeResult",
     "Project",
     "Service",
     "Volume",
-    "MockJudgeClient",
-    "FixedJudgeClient",
+    "DEFAULT_MODEL",
+    "FAILSAFE_MODEL",
+    "GEMINI_DEFAULT_MODEL",
+    "GEMINI_FAILSAFE_MODEL",
+    "OPENROUTER_BASE_URL",
+    "OPENROUTER_DEFAULT_MODEL",
+    "OPENROUTER_MAX_TOKENS",
+    "THINKING_BUDGETS",
+    "GeminiJudgeClient",
+    "OpenRouterJudgeClient",
+    "build_dependency_model",
     "build_evidence_package",
     "build_evidence_packages",
     "build_judge_prompt",
     "discover_candidates",
+    "failsafe_result",
     "filter_and_build_evidence",
     "filter_candidates",
     "filter_with_reasons",
@@ -53,4 +76,5 @@ __all__ = [
     "normalize_volumes",
     "parse_compose_file",
     "parse_project",
+    "placeholder_future_judge",
 ]
