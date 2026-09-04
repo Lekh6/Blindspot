@@ -289,49 +289,46 @@ The dependency model must preserve why BlindSpot believes two services are conne
 
 ---
 
-## 6. Graph — Resource-Based
+## 6. Graph — Resource-Based (React Flow DATA Contract)
 
-Use:
+Stage 6 consumes the `DependencyModel` from Stage 5 and converts it into a deterministic, frontend-friendly graph representation for the future interactive React Flow UI.
 
-- `networkx`
-- `matplotlib`
+Stage 6 does **not** discover, filter, judge, make LLM calls, modify verdicts, calculate confidence, write to cache, or expose model/provider.
 
-The graph should visualize:
+Use `networkx` internally only if useful — it must not become the architectural contract. `matplotlib`/`graph.png` is **not** the primary output. Do **not** implement Stage 6 as PNG generation.
 
-- service nodes
-- resource/configuration nodes
-- the implicit coupling between them
-- the shared resource/configuration responsible for the relationship
-
-**Do not convert a shared resource directly into a service-to-service edge:**
+The graph must remain **bipartite Service ↔ Resource**:
 
 ```text
-Bad:  orders ───────── reports   // falsely implies direct call
+orders → DB_HOST=postgres ← reports   // correct, resource node is mechanism
+orders → shared-data ← reports
+
+Bad: orders ───────── reports  // never — falsely implies direct call
 ```
 
-Use resource nodes:
+**Input:** `DependencyModel` from Stage 5, normally `meaningful_only()` (primary graph shows confirmed meaningful couplings, not coincidental/uncertain). Keep `build_graph(model, meaningful_only=True)` flexible.
 
-```text
-orders ───────┐
-              ▼
-        DB_HOST=postgres
-              ▲
-              │
-reports ──────┘
+**Output:** JSON-serializable, deterministic, provider-agnostic graph `{"nodes": [...], "edges": [...]}` matching React Flow concept:
 
-orders ───────┐
-              ▼
-         shared-data
-              ▲
-              │
-reports ──────┘
+```json
+{
+  "nodes": [
+    {"id": "service:orders", "type": "service", "data": {"name": "orders"}},
+    {"id": "resource:env_var:DB_HOST=postgres", "type": "resource", "data": {"name": "DB_HOST=postgres", "resource_type": "env_var", "value": "postgres"}}
+  ],
+  "edges": [
+    {"id": "service:orders->resource:env_var:DB_HOST=postgres", "source": "service:orders", "target": "resource:env_var:DB_HOST=postgres", "data": {"confidence": 0.93}}
+  ]
+}
 ```
 
-This avoids falsely implying that `orders` calls `reports`. The resource node explicitly shows the mechanism through which the services are connected. The graph represents `Service ↔ Resource` rather than automatically asserting `Service ↔ Service`.
+**Resource deduplication:** Multiple dependencies sharing `DB_HOST=postgres` must share one `resource:env_var:DB_HOST=postgres` node with multiple edges. Identity includes `resource_type` — `env_var:REDIS` ≠ `named_volume:REDIS`. Use deterministic resource-key helper.
 
-Use distinct visual treatment for service nodes and resource nodes.
+**Future extensibility:** `data` must allow later addition of `directory`, `source_locations: [{file, line}]`, `function`, etc., without changing the graph architecture. For now populate only data available from `Dependency/EvidencePackage`.
 
-The graph is a primary demonstration artifact.
+**Determinism, confidence, model:** Same `DependencyModel` → same nodes/edges/IDs. Preserve `confidence` from Stage 4/5 in edge `data`, do not modify. Never expose LLM model/provider in nodes/edges.
+
+The graph is a primary demonstration artifact as **data**, not an image. Frontend will handle layout/zoom/pan/selection interactivity.
 
 ---
 

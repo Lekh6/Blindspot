@@ -1,4 +1,4 @@
-"""BlindSpot — Hidden Dependency Discovery (Stages 1-5, hybrid)."""
+"""BlindSpot — Hidden Dependency Discovery (Stages 1-7, hybrid, Report)."""
 
 from .discovery import Candidate, discover_candidates
 from .filtering import (
@@ -27,7 +27,9 @@ from .judge import (
     judge_evidence_packages,
     placeholder_future_judge,
 )
+from .graph import GraphData, GraphEdge, GraphNode, build_graph, build_graph_data
 from .model import Dependency, DependencyModel, build_dependency_model
+from .report import ReportData, ReportFinding, build_report
 from .parser import (
     Project,
     Service,
@@ -45,8 +47,13 @@ __all__ = [
     "Dependency",
     "DependencyModel",
     "EvidencePackage",
+    "GraphData",
+    "GraphEdge",
+    "GraphNode",
     "JudgeResult",
     "Project",
+    "ReportData",
+    "ReportFinding",
     "Service",
     "Volume",
     "DEFAULT_MODEL",
@@ -62,7 +69,10 @@ __all__ = [
     "build_dependency_model",
     "build_evidence_package",
     "build_evidence_packages",
+    "build_graph",
+    "build_graph_data",
     "build_judge_prompt",
+    "build_report",
     "discover_candidates",
     "failsafe_result",
     "filter_and_build_evidence",

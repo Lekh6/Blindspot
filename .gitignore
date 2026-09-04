@@ -34,5 +34,8 @@ Thumbs.db
 *.png
 .graph/
 report/
+report.json
+report.md
+out/
 cache.json
 .cache/

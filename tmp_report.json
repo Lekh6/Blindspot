@@ -1,0 +1,80 @@
+{
+  "summary": {
+    "total": 2,
+    "meaningful": 2,
+    "coincidental": 0,
+    "uncertain": 0,
+    "reported": 2,
+    "services": 4,
+    "resources": 2
+  },
+  "graph_summary": {
+    "nodes": 6,
+    "edges": 4,
+    "service_nodes": 4,
+    "resource_nodes": 2
+  },
+  "generated_at": "2026-09-04T15:38:15Z",
+  "findings": [
+    {
+      "service_a": "api",
+      "service_b": "worker",
+      "resource": "shared-data",
+      "resource_type": "named_volume",
+      "value": null,
+      "evidence": {
+        "service_a": "api",
+        "service_b": "worker",
+        "resource": "shared-data",
+        "resource_type": "named_volume",
+        "value": null,
+        "evidence": "x",
+        "resolved_service": null,
+        "resolved_image": null,
+        "is_internal": null,
+        "reference_type": "named_volume",
+        "related_config": {},
+        "filtering_signals": {
+          "generic_variable": false,
+          "same_value": false,
+          "different_values": false,
+          "resolved_reference": "named_volume"
+        },
+        "volume_targets": null
+      },
+      "verdict": "meaningful",
+      "confidence": 0.92,
+      "reason": "shared shared-data coupling"
+    },
+    {
+      "service_a": "orders",
+      "service_b": "reports",
+      "resource": "DB_HOST",
+      "resource_type": "env_var",
+      "value": "postgres",
+      "evidence": {
+        "service_a": "orders",
+        "service_b": "reports",
+        "resource": "DB_HOST",
+        "resource_type": "env_var",
+        "value": "postgres",
+        "evidence": "x",
+        "resolved_service": null,
+        "resolved_image": null,
+        "is_internal": null,
+        "reference_type": "compose_service",
+        "related_config": {},
+        "filtering_signals": {
+          "generic_variable": false,
+          "same_value": false,
+          "different_values": false,
+          "resolved_reference": "compose_service"
+        },
+        "volume_targets": null
+      },
+      "verdict": "meaningful",
+      "confidence": 0.95,
+      "reason": "shared DB_HOST coupling"
+    }
+  ]
+}
