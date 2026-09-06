@@ -24,6 +24,12 @@ from typing import Dict, List, Optional, Any, Literal, Protocol, Tuple, Union
 
 from .filtering import EvidencePackage
 
+# Grouped evidence (Prompt 2) — lazy import to avoid circular
+try:
+    from .aggregation import GroupedEvidencePackage  # type: ignore
+except Exception:  # pragma: no cover
+    GroupedEvidencePackage = Any  # type: ignore
+
 Verdict = Literal["meaningful", "coincidental", "uncertain"]
 
 VALID_VERDICTS = {"meaningful", "coincidental", "uncertain"}
@@ -96,8 +102,9 @@ def validate_judge_result(result: JudgeResult) -> None:
 def build_judge_prompt(package: EvidencePackage) -> str:
     """Build narrow classification prompt for a single EvidencePackage.
 
-    Contains: SERVICE A/B, SHARED CONFIGURATION, VALUES, RESOLUTION,
-    RELATED CONFIGURATION (bounded), DETERMINISTIC FILTERING signals.
+    Contains: SERVICE A/B, SHARED CONFIGURATION, VALUES, RESOLUTION (with
+    new distinct states and normalized identity), RELATED CONFIGURATION (bounded),
+    DETERMINISTIC FILTERING + identity strength signals.
     LLM must return verdict/confidence/reason only.
     """
     # Related config formatted per service
@@ -113,27 +120,100 @@ def build_judge_prompt(package: EvidencePackage) -> str:
     else:
         related_str = "  (none — no directly relevant surrounding config)"
 
-    # Resolution line
-    if package.reference_type == "compose_service":
-        resolution = f"{package.value!r} -> Compose service \"{package.resolved_service}\" (image: {package.resolved_image or 'unknown'}) -- internal coupling"
-    elif package.reference_type == "named_volume":
+    # New resolution rendering with distinct states
+    # Use resolution_status / protocol / normalized_identity / chain / final_value
+    resolution_status = getattr(package, "resolution_status", package.reference_type)
+    resource_protocol = getattr(package, "resource_protocol", None)
+    normalized_identity = getattr(package, "normalized_identity", None)
+    identity_strength = getattr(package, "identity_strength", "unknown")
+    final_value = getattr(package, "final_value", package.value)
+    unresolved_vars = getattr(package, "unresolved_vars", ())
+    is_cyclic = getattr(package, "is_cyclic", False)
+    chain = getattr(package, "resolution_chain", ())
+
+    if package.resource_type == "named_volume":
         vol_str = ""
         if package.volume_targets:
             vol_str = ", ".join(f"{svc}:{t!r}" for svc, t in sorted(package.volume_targets.items()))
             vol_str = f" targets {vol_str}"
-        resolution = f"named volume \"{package.resource}\"{vol_str} -- shared filesystem (internal)"
-    elif package.reference_type == "external":
-        resolution = f"{package.value!r} does not resolve to a Compose service -- external/unknown (may be cloud/host outside compose)"
-    else:
-        resolution = "unresolved / not host-like -- insufficient evidence to resolve"
+        resolution = f"named volume \"{package.resource}\"{vol_str} -- shared filesystem (internal)\n  resolution_status: internal"
+        if normalized_identity:
+            resolution += f"\n  normalized_identity: {normalized_identity}"
+    elif resolution_status == "internal":
+        resolution = f"{package.value!r} -> Compose service \"{package.resolved_service}\" (image: {package.resolved_image or 'unknown'}) -- INTERNAL coupling"
+        if resource_protocol:
+            resolution += f"\n  protocol: {resource_protocol}"
+        if normalized_identity:
+            resolution += f"\n  normalized_identity: {normalized_identity}"
+        resolution += f"\n  identity_strength: {identity_strength}"
+        if final_value and final_value != package.value:
+            resolution += f"\n  final_value: {final_value!r}"
+    elif resolution_status == "external_confirmed":
+        resolution = f"{package.value!r} -> final {final_value!r} -- EXTERNAL_CONFIRMED"
+        if resource_protocol:
+            resolution += f"\n  protocol: {resource_protocol}"
+        if normalized_identity:
+            resolution += f"\n  normalized_identity: {normalized_identity} (credentials stripped, deterministic)"
+        resolution += f"\n  identity_strength: {identity_strength}  -- both services point to same external resource"
+        if normalized_identity and identity_strength == "exact":
+            resolution += " (EXACT_RESOURCE_IDENTITY)"
+    elif resolution_status == "partial":
+        unresolved_str = ", ".join(unresolved_vars) if unresolved_vars else "none listed"
+        resolution = f"{package.value!r} -> final {final_value!r} -- PARTIAL (some components unresolved: {unresolved_str})"
+        if resource_protocol:
+            resolution += f"\n  protocol: {resource_protocol} (partial)"
+        if normalized_identity:
+            resolution += f"\n  partial_identity: {normalized_identity}"
+        resolution += f"\n  identity_strength: {identity_strength}  -- same configuration template, physical identity incomplete (CONFIGURATION_IDENTITY possible)"
+        if is_cyclic:
+            resolution += "\n  note: resolution involved cycle or incomplete chain"
+    else:  # unresolved
+        unresolved_str = ", ".join(unresolved_vars) if unresolved_vars else "unknown vars"
+        resolution = f"{package.value!r} -> final {final_value!r} -- UNRESOLVED ({unresolved_str})"
+        if is_cyclic:
+            resolution += " [cycle detected]"
+        resolution += " -- cannot determine final resource identity from deterministic evidence"
+        if resource_protocol:
+            resolution += f"\n  tentative_protocol: {resource_protocol} (unconfirmed)"
+        if normalized_identity:
+            resolution += f"\n  tentative_identity: {normalized_identity}"
+        resolution += f"\n  identity_strength: {identity_strength}"
+
+    # Append bounded chain if present (max 5 steps already bounded)
+    if chain:
+        chain_lines = []
+        for step in chain[:5]:
+            # step is dict from ResolutionStep.to_dict()
+            if isinstance(step, dict):
+                chain_lines.append(f"    {step.get('variable')} via {step.get('source')}: {step.get('from_value')!r} -> {step.get('to_value')!r}")
+            else:
+                chain_lines.append(f"    {step}")
+        resolution += "\n  resolution_chain:\n" + "\n".join(chain_lines)
+        if len(chain) > 5:
+            resolution += f"\n    (+{len(chain)-5} more steps bounded)"
 
     # Values display
     if package.resource_type == "named_volume":
-        values_str = f"shared volume \"{package.resource}\" mounted by both services"
+        values_str = f"shared volume \"{package.resource}\" mounted by both services\n  normalized: {normalized_identity or package.resource}"
     elif package.value is not None:
-        values_str = f"{package.service_a} -> {package.value!r}\n{package.service_b} -> {package.value!r}  (same_value: true)"
+        if final_value is not None and final_value != package.value:
+            values_str = f"{package.service_a} -> {package.value!r} => final {final_value!r}\n{package.service_b} -> {package.value!r} => final {final_value!r}  (same_value: true, unresolved: {list(unresolved_vars) if unresolved_vars else 'none'})"
+        else:
+            values_str = f"{package.service_a} -> {package.value!r}\n{package.service_b} -> {package.value!r}  (same_value: true, status: {resolution_status})"
+            if normalized_identity:
+                values_str += f"\n  normalized_identity: {normalized_identity} ({identity_strength})"
     else:
         values_str = f"{package.service_a} / {package.service_b} values differ or absent (same_value: false)"
+
+    # Filtering signals include new fields
+    filtering_block = (
+        f"generic_variable: {str(package.generic_variable).lower()}\n"
+        f"same_value: {str(package.same_value).lower()}\n"
+        f"resolved_reference: {package.reference_type}\n"
+        f"resolution_status: {resolution_status}\n"
+        f"identity_strength: {identity_strength}\n"
+        f"resource_protocol: {resource_protocol or 'unknown'}"
+    )
 
     return f"""You are evaluating one candidate for implicit cross-service coupling.
 
@@ -155,21 +235,24 @@ RESOLUTION
 RELATED CONFIGURATION (bounded, only directly relevant)
 {related_str}
 
-DETERMINISTIC FILTERING
-generic_variable: {str(package.generic_variable).lower()}
-same_value: {str(package.same_value).lower()}
-resolved_reference: {package.reference_type}
+DETERMINISTIC FILTERING AND IDENTITY
+{filtering_block}
 
 TASK
 Determine whether the evidence indicates:
-1. meaningful coupling — shared resource implies services are implicitly coupled (e.g. shared DB host/volume)
+1. meaningful coupling — shared resource implies services are implicitly coupled (e.g. shared DB host/volume, same normalized external resource)
 2. coincidental overlap — same name/value by chance, no real coupling (e.g. generic PORT, unrelated strings)
 3. insufficient evidence — cannot decide from given facts
 
+Confidence guidance (reflect evidence strength, not just wording):
+- High confidence (0.85-1.0): resolution_status internal/external_confirmed + identity_strength exact + normalized_identity deterministically established
+- Medium confidence (0.6-0.85): strong configuration convergence but identity_strength config / status partial (same template, some components unresolved)
+- Lower confidence (0.0-0.6): ambiguous, unresolved, unknown protocol, or only suggestive config overlap
+
 Return JSON with:
 - verdict: "meaningful" | "coincidental" | "uncertain"
-- confidence: 0.0-1.0 (mandatory, how confident you are)
-- reason: short explanation (1-2 sentences)
+- confidence: 0.0-1.0 (mandatory, how confident you are — reflect strength above)
+- reason: short explanation (1-2 sentences) referencing normalized identity or configuration template
 """
 
 
@@ -661,6 +744,259 @@ def judge_evidence_packages(
     results: List[Tuple[EvidencePackage, JudgeResult]] = []
     for pkg in sorted(packages, key=lambda p: (p.service_a, p.service_b, p.resource_type, p.resource)):
         result = judge_evidence_package(pkg, client, cache_path=cache_path, use_cache=use_cache)
+        results.append((pkg, result))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Grouped judgment (Prompt 2 — resource-centric)
+# ---------------------------------------------------------------------------
+
+def build_grouped_judge_prompt(grouped: Any) -> str:
+    """Build prompt for one GroupedEvidencePackage.
+
+    Contains: resource identity/protocol/status/strength, services involved,
+    configuration evidence grouped by service, bounded unresolved vars, representative chain.
+    """
+    # Configuration evidence grouped by service
+    config_lines = []
+    for svc in sorted(grouped.configuration_evidence.keys()):
+        vars_list = grouped.configuration_evidence[svc]
+        if vars_list:
+            config_lines.append(f"  {svc}: {', '.join(sorted(vars_list))}")
+        else:
+            config_lines.append(f"  {svc}: (none)")
+    config_str = "\n".join(config_lines) if config_lines else "  (none)"
+
+    services_str = ", ".join(sorted(grouped.services))
+    obs_resources_str = ", ".join(sorted(grouped.observation_resources)) if grouped.observation_resources else "(none)"
+
+    # Resolution human readable
+    status = grouped.resolution_status
+    protocol = grouped.resource_protocol or "unknown"
+    identity = grouped.resource_identity or "(unknown)"
+    strength = grouped.identity_strength
+    unresolved = ", ".join(sorted(grouped.unresolved_vars)) if grouped.unresolved_vars else "none"
+    chain = grouped.representative_chain
+
+    if status == "internal":
+        res_line = f"INTERNAL — {identity} (protocol: {protocol}, strength: {strength})"
+    elif status == "external_confirmed":
+        res_line = f"EXTERNAL_CONFIRMED — {identity} (protocol: {protocol}, strength: {strength})"
+    elif status == "partial":
+        res_line = f"PARTIAL — {identity} (protocol: {protocol}, strength: {strength}, unresolved: {unresolved})"
+    else:
+        res_line = f"UNRESOLVED — {identity} (protocol: {protocol}, strength: {strength}, unresolved: {unresolved})"
+
+    chain_str = ""
+    if chain:
+        chain_lines = []
+        for step in chain[:3]:
+            if isinstance(step, dict):
+                chain_lines.append(f"    {step.get('variable')} via {step.get('source')}: {step.get('from_value')!r} -> {step.get('to_value')!r}")
+        chain_str = "\n".join(chain_lines)
+        if chain_str:
+            res_line += f"\n  representative chain:\n{chain_str}"
+
+    return f"""You are evaluating one resource group for implicit cross-service coupling.
+
+SHARED RESOURCE
+{identity}  (protocol: {protocol}, type: {grouped.resource_type})
+Resolution: {res_line}
+Identity strength: {strength}  (exact = proven physical, config = same configuration template, unknown = insufficient)
+Services involved ({grouped.service_count}): {services_str}
+Configuration observations ({grouped.evidence_count}): {obs_resources_str}
+
+CONFIGURATION EVIDENCE BY SERVICE
+{config_str}
+
+UNRESOLVED COMPONENTS
+{unresolved}
+
+TASK
+Determine whether these {grouped.service_count} services exhibit meaningful implicit coupling through this shared resource/configuration.
+
+1. meaningful — shared resource implies services are implicitly coupled (e.g. same DB, same volume, same external service)
+2. coincidental — same name/value by chance, no real coupling
+3. insufficient — cannot decide from given facts
+
+Confidence guidance:
+- High (0.85-1.0): resolution internal/external_confirmed + strength exact + normalized identity deterministically established
+- Medium (0.6-0.85): strong config convergence but strength config / status partial (same template, some components unresolved)
+- Lower (0.0-0.6): ambiguous, unresolved, unknown protocol, only suggestive
+
+Return JSON with:
+- verdict: "meaningful" | "coincidental" | "uncertain"
+- confidence: 0.0-1.0 (reflect strength above)
+- reason: 1-2 sentences, must refer to the group (e.g. "All three services..." not "Both services share DATABASE_URL")
+"""
+
+
+def _cache_key_for_grouped(grouped: Any) -> str:
+    payload = grouped.cache_key_dict()
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def failsafe_grouped_result(grouped: Any, reason: str, model: str = FAILSAFE_MODEL) -> JudgeResult:
+    msg = reason.strip()[:300] if reason.strip() else "LLM call failed"
+    ident = getattr(grouped, "resource_identity", "") or getattr(grouped, "grouping_key", "group")
+    return JudgeResult(
+        verdict="uncertain",
+        confidence=0.5,
+        reason=f"Failsafe ({FAILSAFE_MODEL}): {msg} — group was {ident}",
+        model=model,
+    )
+
+
+def judge_grouped_package(
+    grouped: Any,
+    client: Any,
+    cache_path: Optional[Union[Path, str]] = None,
+    use_cache: bool = True,
+) -> JudgeResult:
+    cache_key = _cache_key_for_grouped(grouped)
+    cache: Dict[str, Any] = {}
+    if use_cache and cache_path is not None:
+        cache = _load_cache(cache_path)
+        if cache_key in cache:
+            try:
+                return JudgeResult.from_dict(cache[cache_key])
+            except Exception:
+                pass
+
+    prompt = build_grouped_judge_prompt(grouped)
+
+    # Try client grouped method first, then fallback to direct LLM call via prompt
+    result: Optional[JudgeResult] = None
+    # If client has judge_grouped, use it
+    if hasattr(client, "judge_grouped"):
+        try:
+            result = client.judge_grouped(grouped)  # type: ignore
+        except Exception as e:
+            result = failsafe_grouped_result(grouped, f"client.judge_grouped error: {e}", model=f"{FAILSAFE_MODEL}-failsafe-grouped")
+    elif hasattr(client, "judge"):
+        # For backward compat, try calling judge with grouped — clients that only handle EvidencePackage will fail gracefully
+        # Instead, perform direct LLM call using the grouped prompt via the client's underlying LLM logic
+        # We reuse the client's _resolve_api_key and LLM call pattern by constructing a tiny wrapper
+        try:
+            # If client is Gemini/OpenRouter, we can call its LLM directly with prompt
+            # Detect client type by presence of _resolve_api_key
+            if hasattr(client, "_resolve_api_key"):
+                # Use generic LLM dispatch: build JudgeResult via direct API call with grouped prompt
+                # We implement a helper inline
+                import os as _os
+                # Gemini vs OpenRouter dispatch
+                if client.__class__.__name__ == "GeminiJudgeClient":
+                    api_key = client._resolve_api_key()  # type: ignore
+                    if not api_key:
+                        result = failsafe_grouped_result(grouped, "GEMINI_API_KEY not set", model=f"{client.fallback_model}-failsafe-no-key")  # type: ignore
+                    else:
+                        try:
+                            from google import genai  # type: ignore
+                            from google.genai import types  # type: ignore
+                            g_client = genai.Client(api_key=api_key)
+                            budget = client._thinking_budget()  # type: ignore
+                            # Try with thinking config
+                            try:
+                                cfg = types.GenerateContentConfig(
+                                    temperature=client.temperature,  # type: ignore
+                                    response_mime_type="application/json",
+                                    thinking_config=types.ThinkingConfig(thinking_budget=budget),
+                                )
+                                resp = g_client.models.generate_content(model=client.model, contents=prompt, config=cfg)  # type: ignore
+                            except Exception:
+                                resp = g_client.models.generate_content(model=client.model, contents=prompt, config={"temperature": client.temperature, "response_mime_type": "application/json"})  # type: ignore
+                            text = resp.text if hasattr(resp, "text") and resp.text else str(resp)
+                            # Parse
+                            raw = text.strip()
+                            if raw.startswith("```"):
+                                raw = "\n".join(l for l in raw.split("\n") if not l.strip().startswith("```")).strip()
+                            data = json.loads(raw)
+                            if isinstance(data, dict) and "verdict" not in data:
+                                for v in data.values():
+                                    if isinstance(v, dict) and "verdict" in v:
+                                        data = v
+                                        break
+                            result = JudgeResult(verdict=str(data["verdict"]).lower(), confidence=float(data["confidence"]), reason=str(data["reason"]).strip(), model=client.model)  # type: ignore
+                            validate_judge_result(result)
+                        except Exception as e:
+                            result = failsafe_grouped_result(grouped, f"Gemini grouped error: {type(e).__name__}: {e}")
+                elif client.__class__.__name__ == "OpenRouterJudgeClient":
+                    api_key = client._resolve_api_key()  # type: ignore
+                    if not api_key:
+                        result = failsafe_grouped_result(grouped, "OPENROUTER_API_KEY not set", model=f"{FAILSAFE_MODEL}-failsafe-no-key")
+                    else:
+                        try:
+                            from openai import OpenAI  # type: ignore
+                            oai = OpenAI(api_key=api_key, base_url=client.base_url)  # type: ignore
+                            resp = oai.chat.completions.create(
+                                model=client.model,  # type: ignore
+                                temperature=client.temperature,  # type: ignore
+                                max_tokens=client._max_tokens(),  # type: ignore
+                                messages=[
+                                    {"role": "system", "content": "You are a precise architecture judge. Return JSON only with verdict (meaningful|coincidental|uncertain), confidence 0-1, reason (1-2 sentences)."},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                response_format={"type": "json_object"},  # type: ignore
+                            )
+                            text = resp.choices[0].message.content or ""
+                            import re as _re
+                            raw = text.strip()
+                            if "```" in raw:
+                                m = _re.search(r"```(?:json)?\s*(.*?)\s*```", raw, _re.DOTALL)
+                                if m:
+                                    raw = m.group(1).strip()
+                            if not raw.lstrip().startswith("{"):
+                                ms = _re.findall(r"\{[^{}]*\"verdict\"[^{}]*\}", raw, _re.DOTALL)
+                                if ms:
+                                    raw = ms[-1]
+                            data = json.loads(raw)
+                            if isinstance(data, dict) and "verdict" not in data:
+                                for v in data.values():
+                                    if isinstance(v, dict) and "verdict" in v:
+                                        data = v
+                                        break
+                            result = JudgeResult(verdict=str(data["verdict"]).lower(), confidence=float(data["confidence"]), reason=str(data["reason"]).strip(), model=client.model)  # type: ignore
+                            validate_judge_result(result)
+                        except Exception as e:
+                            result = failsafe_grouped_result(grouped, f"OpenRouter grouped error: {type(e).__name__}: {e}")
+                else:
+                    # Generic client: try calling judge with grouped package directly
+                    result = client.judge(grouped)  # type: ignore
+            else:
+                result = client.judge(grouped)  # type: ignore
+        except Exception as e:
+            result = failsafe_grouped_result(grouped, f"judge grouped fallback error: {e}")
+
+    if result is None:
+        result = failsafe_grouped_result(grouped, "No client method succeeded for grouped judgment")
+
+    validate_judge_result(result)
+
+    if use_cache and cache_path is not None:
+        cache = _load_cache(cache_path)
+        cache[cache_key] = {
+            "verdict": result.verdict,
+            "confidence": result.confidence,
+            "reason": result.reason,
+            "model": result.model,
+            "cache_key_dict": grouped.cache_key_dict(),
+        }
+        _save_cache(cache_path, cache)
+
+    return result
+
+
+def judge_grouped_packages(
+    grouped_packages: List[Any],
+    client: Any,
+    cache_path: Optional[Union[Path, str]] = None,
+    use_cache: bool = True,
+) -> List[Tuple[Any, JudgeResult]]:
+    results: List[Tuple[Any, JudgeResult]] = []
+    for pkg in sorted(grouped_packages, key=lambda g: g.grouping_key):
+        result = judge_grouped_package(pkg, client, cache_path=cache_path, use_cache=use_cache)
         results.append((pkg, result))
     return results
 

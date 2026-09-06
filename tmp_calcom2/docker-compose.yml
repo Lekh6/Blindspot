@@ -1,0 +1,18 @@
+services:
+  calcom:
+    image: calcom:latest
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATABASE_HOST}/${POSTGRES_DB}
+      DATABASE_DIRECT_URL: ${DATABASE_URL}
+  calcom-api:
+    image: calcom-api:latest
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATABASE_HOST}/${POSTGRES_DB}
+      DATABASE_DIRECT_URL: ${DATABASE_URL}
+      DATABASE_READ_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATABASE_HOST}/${POSTGRES_DB}
+      DATABASE_WRITE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATABASE_HOST}/${POSTGRES_DB}
+  studio:
+    image: studio:latest
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DATABASE_HOST}/${POSTGRES_DB}
+      DATABASE_DIRECT_URL: ${DATABASE_URL}

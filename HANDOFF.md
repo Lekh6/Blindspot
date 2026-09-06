@@ -1,92 +1,120 @@
 # HANDOFF.md — What the Next Agent Needs to Know
 
 > Read this first when you start a session. It tells you where we left off and exactly what to do next.
-**Last Updated:** 2026-09-04
-**Current Phase:** **Finished Project — Stages 1–7 DONE** (parser + discovery + filtering + **LLM Judge provider-agnostic** + **Dependency Model model-hidden** + **Graph React Flow DATA** + **Report** + **CLI** one-command)
-**Current Branch:** `main` — working tree: complete, demoable
+**Last Updated:** 2026-09-06 (Prompt 2 Done)
+**Current Phase:** **Tier 1 Complete + Redesign + Resource-Centric Aggregation DONE** (parser + discovery + **bounded resolution** + **aggregation by normalized_identity** + **Grouped LLM 1/group** + **CouplingModel** + **Graph from groups** + **Grouped Report** + **CLI minimal**) — **Tier 2 Kubernetes NEXT (whole point)**
+**Current Branch:** `main` — working tree: Prompt 2 done, 92 tests, Tier 2 next
 
 ---
 
 ## 1. TL;DR for Next Agent
 
-1. Read `AGENTS.md` (§3 bounded evidence, §4 one call/candidate, §5 service-to-resource, §6 React Flow DATA) + `PROJECT_PLAN.md` + `STATE.md` §2, then this file.
-2. **Stages 1–7 DONE:** `parser.py` 540 LOC, `discovery.py` 132 LOC, `filtering.py` 355 LOC, `judge.py` 687 LOC, `model.py` 160 LOC + `graph.py` 180 LOC + `report.py` 170 LOC (`ReportFinding:22`, `ReportData:85` `findings + summary{total/meaningful/services/resources} + graph_summary`, `build_report:160` → `report.json`+`report.md` model hidden) + `cli.py` one-command `blindspot` (Parse→Report). **61 tests pass**. `shared_env` 2→2 meaningful, `shared_volume` 1, `near_miss` 0→0.
-3. **Full pipeline now:** `parse_compose_file` → `discover_candidates` → `build_evidence_packages` → `judge_evidence_packages` (0+1/candidate, cached) → `DependencyModel.from_judgments` → `build_graph(meaningful_only=True)` → `build_report(model, graph_data)` → `report.json`+`report.md`+`graph.json` (model hidden, `report.log.json` internal). CLI `src/blindspot/cli.py:1` wraps it for one/many repos.
-4. Keep updated: `STATE.md`, `DECISIONS.md` (D-028 Report+CLI), `HANDOFF.md`.
-5. `.env` gitignored, `!fixtures/**/.env` allowed, `cache.json` ignored.
+1. Read `AGENTS.md` (§3 bounded evidence with `internal/external_confirmed/partial/unresolved`, §3b aggregation by `normalized_identity`, §4 one call/group, §5 CouplingModel, §6 Graph from groups) + `PROJECT_PLAN.md` + `STATE.md` §2, then this file.
+2. **Stages 1–7 + Redesign + Prompt 2 DONE:** `parser.py` 540 LOC, `discovery.py` 132 LOC, `resolution.py` 607 LOC, `aggregation.py` 200 LOC (`GroupedEvidencePackage`, `aggregate_evidence_packages`), `coupling.py` 150 LOC (`CouplingGroup/Model`), `filtering.py` 530 LOC, `judge.py` 900 LOC (`build_grouped_judge_prompt`, `judge_grouped_packages` 0+1/group), `graph.py` 350 LOC (`build_graph_from_groups`), `report.py` 400 LOC (`GroupedReportData`), `cli.py` grouped. **92 tests pass** (32+8+8+13+17+14). Cal.com 6 obs →1 group (3 svcs) →1 finding →1 node+3 edges.
+3. **Full pipeline now (grouped):** `parse_compose_file` → `discover_candidates` → `build_evidence_packages` → `aggregate_evidence_packages` (by `normalized_identity`) → `judge_grouped_packages` (0+1/group, cached on grouped key) → `CouplingModel.from_grouped_judgments` → `build_graph_from_groups` → `build_grouped_report` → `report.json+report.md+graph.json` (model hidden). CLI wraps for one/many repos (minimal `Provider/Thinking/Out`).
+4. Keep updated: `STATE.md`, `DECISIONS.md` (D-030 grouped), `HANDOFF.md`.
+5. `.env` gitignored, `!fixtures/**/.env` allowed, `cache.json` ignored. **Windows: use absolute quoted `set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low`** (or `.venv\Scripts\python` if `python` is system python → `No module named 'yaml'`).
 
 ---
 
 ## 2. Where We Left Off
 
-- `AGENTS.md:1` 522 LOC + `PROJECT_PLAN.md:1` 301 LOC hybrid spec.
-- **Parser:** `parser.py:45` `Service.image` + `parse_compose_file:488`/`505` + `_merge_projects:401` image override; `D-022`.
-- **Filtering:** `filtering.py:70` `EvidencePackage` + `build_evidence_package:180` with HOST/URL-like guard, `host:port` split, `volume_targets`, `related_config` bounded; `D-023`.
-- **Judge:** `judge.py:40` `JudgeResult` + `build_judge_prompt:81` + `GeminiJudgeClient:259` + `OpenRouterJudgeClient:475` + `failsafe_result:226` + `judge_evidence_package:582` `cache.json:165` `0+1/candidate`; `D-025`.
-- **Model:** `model.py:27` `Dependency{..., _model(hidden)}` + `model.py:108` `DependencyModel{sorted, meaningful_only(), to_dict hides model, to_log_dict retains}` `Stage 4 → Stage 5` service-to-resource, model-blind; `D-026`.
-- **Graph:** `graph.py:80` `build_graph(model, meaningful_only=True)` → `{"nodes","edges"}` bipartite, dedup, confidence, model hidden; `tests/test_graph.py` 13; `D-027`.
-- **Report:** `report.py:22` `ReportFinding` + `report.py:84` `ReportData{findings, summary{total/meaningful/services/resources}, graph_summary, generated_at}` + `build_report:160` → `report.json`+`report.md` per finding `service_a/b, resource, resource_type, value, evidence{resolved/related/filtering}, verdict, confidence, reason` (model hidden); empty → placeholder; `D-028`.
-- **CLI:** `cli.py:1` `blindspot` — one-command full pipeline for one/many repos, `find_compose`, `--provider auto|openrouter|gemini --thinking low/medium --cache cache.json --out out --all`, writes `out/<repo>/report.json+report.md+graph.json+report.log.json` (log has model), summary table; `D-028`.
-- Tests: 48 passed (Stage 5 manual: external leak `False`, log retains).
+- `AGENTS.md:1` 522 LOC + `PROJECT_PLAN.md:1` 301 LOC hybrid spec (plus redesign notes).
+- **Parser:** `parser.py:45` `Service.image` + `parse_compose_file:488`/`505` + `_merge_projects:401`.
+- **Resolution (NEW):** `resolution.py:1` `ResolutionResult/Step` + `bounded_resolve:270` (lookup from `Compose/.env/env_file`, while `${VAR}` with cycle/depth, `MAX_RESOLUTION_DEPTH=10`, `_normalize_connection_identity` for `postgresql/mysql/mongodb/redis` stripping creds, `internal` only if host-like or URI host matches service, `external_confirmed/partial/unresolved`, `exact/config/unknown` via ` host|port|db`). `D-029`.
+- **Filtering (REDESIGN):** `filtering.py:68` `EvidencePackage` extended with `resolution_status/normalized_identity/resource_protocol/identity_strength/chain/final_value/unresolved_vars/is_cyclic/depth` + `_resolve_candidate:160` handles different-values via both sides normalize check + `_decide_with_project:386` + `build_evidence_packages:420` (enriched `filter: kept — normalized identity`). Keeps `filter_candidates` backward compat for unit tests.
+- **Judge (REDESIGN):** `judge.py:96` `build_judge_prompt` now renders `resolution_status/normalized_identity/identity_strength/chain/unresolved` + confidence guidance `exact 0.85-1.0 / config 0.6-0.85 / unknown 0.0-0.6`; `cache_key_dict` now includes `normalized_identity/resolution_status/final_value`.
+- **Model:** `model.py:27` `Dependency{_model(hidden)}` + `model.py:218` `from_list` rehydrates new fields.
+- **Graph (REDESIGN):** `graph.py:76` `_resource_key(resource, resource_type, value, normalized_identity=None)` prefers `normalized_identity` (`resource:env_var:postgresql|db|5432|calcom`) else legacy, `build_graph:102` includes `normalized_identity/resource_protocol/resolution_status` in node `data`, dedup strips credentials.
+- **Report (REDESIGN):** `report.py:105` `to_markdown` branches `INTERNAL/EXTERNAL_CONFIRMED/PARTIAL/UNRESOLVED` + `Normalized:` + `Resolution chain` (bounded 5) + `Identity strength` + `Unresolved vars`.
+- **CLI:** `cli.py:1` one-command, `find_compose`, `--thinking low` typical for Windows example `set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low` (absolute path, quoted; use `.venv\Scripts\python` if `python` is system python).
+- Tests: 78 passed. `shared_env` now `unresolved config` 0.75 honest (not `external` 0.90), `calcom` `DATABASE_URL` chain `internal exact postgresql|database||calcom`.
 
 ---
 
-## 3. How to Run (Finished Project)
+## 3. Immediate Next Steps — Tier 2 is the Whole Point
 
-**One-command testing — one or more repos `cli.py:1`:**
+**Tier 1 + redesign is demoable — Tier 2 Kubernetes is next (same pipeline, provider-agnostic):**
+* Parse Kubernetes YAML → workloads → shared ConfigMap/Secret/shared-volume candidates → same `Filtering (with resolution) → Judge → Model → Graph → Report` pipeline `AGENTS.md:385`.
+* Do not create a separate downstream architecture for K8s findings.
+
+**How to test any repo(s) — Windows cmd.exe vs bash:**
+
+```cmd
+REM Windows — from C:\Users\Lekha\Projects\Blindspot — absolute path, quoted, venv python
+.venv\Scripts\python -m pip install -r requirements.txt
+echo OPENROUTER_API_KEY=sk-or-v1-...>> .env
+REM if `python` is system python and you get ModuleNotFoundError: No module named 'yaml', replace `python` with `.venv\Scripts\python`
+set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low
+set PYTHONPATH=src && python -m blindspot.cli "C:\path\to\repo1" "C:\path\to\repo2" --out out --provider openrouter --cache cache.json
+type out\calcom\report.md
+```
+
 ```bash
+# Git Bash / Linux
 pip install -r requirements.txt
-echo OPENROUTER_API_KEY=sk-or-v1-... >> .env  # or GEMINI_API_KEY (auto picks OPENROUTER)
-PYTHONPATH=src python -m blindspot.cli fixtures/shared_env --out out --thinking low  # single
-PYTHONPATH=src python -m blindspot.cli /path/to/repo1 /path/to/repo2 --out out --provider openrouter --cache cache.json  # many
-git clone https://github.com/<small-multi-service-repo> /tmp/real && PYTHONPATH=src python -m blindspot.cli /tmp/real --out out --thinking low
-# out/<repo>/report.json (machine, model hidden) + report.md (human) + graph.json (React Flow DATA, bipartite) + report.log.json (internal provider+model) + cache.json reuse
+echo OPENROUTER_API_KEY=sk-or-v1-... >> .env
+PYTHONPATH=src .venv/Scripts/python -m blindspot.cli /path/to/repo --out out --thinking medium
+PYTHONPATH=src .venv/Scripts/python -m blindspot.cli /tmp/real --out out --provider openrouter --cache cache.json
+cat out/repo/report.md
 # Summary table printed: cand -> pkgs -> deps (meaningful) -> nodes/edges
 ```
 
-No further stages — project is complete. To re-run on new repos, use the CLI command above.
+Tier 1 validates via CLI above; Tier 2 extends candidate discovery to K8s manifests without changing downstream.
 
 ---
 
 ## 4. Critical Constraints & Gotchas
 
 - **Discovery ≠ Judgment** — LLM only judges filtered + bounded packages (one per package).
-- **Shared names ≠ dependencies** — `PORT` filtered before LLM.
-- **Evidence matters + bounded** — give LLM smallest machine-verified facts (required + resolved service/image/internal, related DB_* bounded, filtering signals). No unrelated config. Prompt `build_judge_prompt:81` is provider-agnostic.
-- **Evidence resolution before LLM** — deterministically resolve `DB_HOST=postgres -> postgres:16` (only HOST/URL-like), `named_volume` internal.
-- **One LLM call per survivor** — `0 for obvious noise + 1 per interesting candidate`; `uncertain` allowed; `cache.json` key = `sha256(cache_key_dict)` (not just value); model/version stored. Provider pluggable (Gemini or OpenRouter).
-- **Provider-agnostic** — Do not tie prompt/architecture to Gemini; `DEFAULT_MODEL` = `nvidia/nemotron-3-ultra-550b-a55b`, `FAILSAFE_MODEL` = `gemini-3.1-flash-lite`; lazy `type: ignore` imports keep module importable without SDK. `OPENROUTER_MAX_TOKENS` maps thinking low/medium to max_tokens.
-- **Confidence is first-class** — `JudgeResult` → `Dependency{verdict, confidence, reason, evidence}` → `Graph`/`Report` (confidence exposed, model hidden externally).
-- **Model hidden** — `Dependency._model` stored privately, `to_dict()` omits it, `to_log_dict()`/`cache.json`/`logging` retain it. User never sees provider.
-- **Resource graph (RE-ARCHED)** — Stage 6 is **DATA contract** `{"nodes": [{"id": "service:...", "type": "service"}, {"id": "resource:...", "type": "resource"}]` + `edges source→resource` — not `matplotlib`/`graph.png`. Bipartite, dedup by `resource_type`, deterministic, preserves `confidence`, hides `model`, JSON-serializable, extensible `data` for `source_locations` later.
-- **Failsafe** — `failsafe_result:226` returns `uncertain 0.5` on missing key/SDK/API error/parse error, attributed to `FAILSAFE_MODEL` (logged, not external).
-- **Stack** — `pyyaml`, `python-dotenv`, `google-genai`, `openai`, `networkx`, `matplotlib` (openai only for OpenRouter, google-genai only for Gemini).
-- **Windows host** — `C:\Users\Lekha\Projects\Blindspot`, `bash`, `.env` gitignored.
+- **Shared names ≠ dependencies** — `PORT` filtered before LLM. Different raw that normalize same (`user1:pass@db` vs `user2:pass@db` → `postgresql|db|5432|calcom`) are *kept* (project-aware).
+- **Windows venv trap** — `python -m blindspot.cli` fails with `ModuleNotFoundError: No module named 'yaml'` if `python` is system python. Use `set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low` when venv is activated, or `set PYTHONPATH=src && .venv\Scripts\python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low` explicitly. `PyYAML` lives in `.venv`.
+- **Evidence matters + bounded + distinct states** — Never silently `external`. States: `internal` (Compose service matched, host-like gated), `external_confirmed` (supported URI fully resolved), `partial` (supported scheme but unresolved vars), `unresolved` (plain `shared-db`, cycle, depth, unknown `abc://`). Provide `normalized_identity` only for exact/partial, credentials stripped, deterministic.
+- **Chain bounded** — `MAX_RESOLUTION_DEPTH=10`, cycle detection via `seen_values`/`seen_vars`, deterministic lookup from `Compose/.env/env_file` (sorted services, `service_a/b` first), `resolution_chain` max 5 rendered.
+- **Identity strength** — `exact` (proven physical `host+db`), `config` (same template `shared-db` or `postgresql://${HOST}/db` unresolved), `unknown`. Judge prompt guides confidence accordingly.
+- **Value-structure, not name dictionary** — No `DATABASE_URL` list. Parsers on `://` scheme (`postgresql/postgres/mysql/mongodb/mongodb+srv/redis/rediss`). Unknown `abc://` stays `resource_protocol=None`.
+- **Dedup by normalized_identity** — `graph.py:76` `resource:env_var:postgresql|db|5432|calcom` dedup strips credentials; fallback to `resource_type:resource[=value]`. Preserves `confidence`, hides `model`, bipartite only, deterministic.
+- **One LLM call per survivor** — `0 for obvious noise + 1 per interesting candidate`; `uncertain` allowed; `cache.json` key = `sha256(cache_key_dict with normalized_identity/resolution_status/final_value)`.
+- **Provider-agnostic** — Do not tie prompt/architecture to Gemini; `DEFAULT_MODEL` = `nvidia/nemotron-3-ultra-550b-a55b`; lazy `type: ignore` imports.
+- **Confidence is first-class + reflects strength** — `exact` → 0.85-1.0, `config` → 0.6-0.85, `unknown` → 0.0-0.6. Do not invent via prompt wording alone; strengthen evidence first.
+- **Model hidden** — `Dependency._model` private, `to_log_dict`/`cache.json` retain.
+- **Stack** — `pyyaml`, `python-dotenv`, `google-genai`, `openai`, `networkx`, `matplotlib`.
 
 ---
 
-## 5. Project Complete Checklist
+## 5. Project Checklist — Tier 1 Done + Redesign, Tier 2 Next
 
-- [x] `STATE.md` Stages 1–7 DONE (100% code), Graph DATA + Report model hidden
-- [x] `HANDOFF.md` Stages 1–7 DONE, CLI one-command documented
-- [x] `DECISIONS.md` D-021 → D-028 (hybrid → graph DATA → report+CLI)
-- [x] `README.md` finished project (pipeline, fixtures, usage, graph DATA, report format, 61 tests)
-- [x] Tests 61 passed (`test_parser` 32 + `test_discovery` 8 + `test_filtering` 8 + `test_graph` 13) + manual synthetic + real-repo via CLI
-- [x] `src/blindspot/{parser, discovery, filtering, judge, model, graph, report, cli}.py` complete
+- [x] `STATE.md` Stages 1–7 DONE + redesign (78 tests, normalized dedup)
+- [x] `HANDOFF.md` redesign + Windows venv gotcha documented
+- [x] `DECISIONS.md` D-021 → D-029 (hybrid → graph DATA → report+CLI → resolution/identity redesign)
+- [x] `README.md` finished Tier 1 + redesign (pipeline stage 3 states, normalized identity, Windows cmd example `set PYTHONPATH=src && .venv\Scripts\python -m blindspot.cli ..\Docker --out out\calcom --thinking medium`, 78 tests) — still notes Tier 2 as next
+- [x] Tests 78 passed (`test_parser` 32 + `test_discovery` 8 + `test_filtering` 8 + `test_graph` 13 + `test_resolution` 17)
+- [x] `src/blindspot/{parser, discovery, resolution, filtering, judge, model, graph, report, cli}.py` complete
+- [ ] Tier 2 Kubernetes (ConfigMap/Secret/volumes, same pipeline) — **NEXT, whole point of project**
 
-No handoff needed — project is finished and demoable via `PYTHONPATH=src python -m blindspot.cli --help`.
+Next agent: implement Tier 2 K8s candidate discovery → same Filtering→Judge→Model→Graph→Report pipeline.
 
 ---
 
 ## 6. Useful Commands
 
+```cmd
+REM Windows
+git status
+set PYTHONPATH=src && python -m pytest -v
+REM judge with OpenRouter (low thinking) on absolute-path repo
+set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low
+type out\calcom\report.md
+type out\calcom\graph.json
+REM if ModuleNotFoundError: No module named 'yaml', use .venv\Scripts\python instead of python
+```
+
 ```bash
+# Git Bash
 git status
 PYTHONPATH=src .venv/Scripts/python -m pytest -v
-# judge with Gemini (low thinking)
-PYTHONPATH=src .venv/Scripts/python -c "from dotenv import load_dotenv; load_dotenv(); from blindspot.parser import parse_compose_file; from blindspot.discovery import discover_candidates; from blindspot.filtering import build_evidence_packages; from blindspot.judge import GeminiJudgeClient, judge_evidence_packages; p=parse_compose_file('fixtures/shared_env/docker-compose.yml'); pkgs=build_evidence_packages(discover_candidates(p), p); print(judge_evidence_packages(pkgs, GeminiJudgeClient(thinking_level='low'), cache_path='cache.json'))"
-# judge with Nemotron Ultra via OpenRouter (provider-agnostic, low=512 tokens)
-PYTHONPATH=src .venv/Scripts/python -c "from dotenv import load_dotenv; load_dotenv(); from blindspot.parser import parse_compose_file; from blindspot.discovery import discover_candidates; from blindspot.filtering import build_evidence_packages; from blindspot.judge import OpenRouterJudgeClient, judge_evidence_packages; p=parse_compose_file('fixtures/shared_env/docker-compose.yml'); pkgs=build_evidence_packages(discover_candidates(p), p); print(judge_evidence_packages(pkgs, OpenRouterJudgeClient(thinking_level='low'), cache_path='cache.json'))"
+# judge with Gemini (low thinking) single synthetic check
+PYTHONPATH=src .venv/Scripts/python -c "from dotenv import load_dotenv; load_dotenv(); from blindspot.parser import parse_compose_file; from blindspot.discovery import discover_candidates; from blindspot.filtering import build_evidence_packages; p=parse_compose_file('fixtures/shared_env/docker-compose.yml'); print([p.to_dict() for p in build_evidence_packages(discover_candidates(p), p)])"
 PYTHONPATH=src .venv/Scripts/python -c "from blindspot.judge import JudgeResult, validate_judge_result; validate_judge_result(JudgeResult(verdict='meaningful', confidence=0.93, reason='ok', model='test'))"
 ```
 
@@ -94,8 +122,9 @@ PYTHONPATH=src .venv/Scripts/python -c "from blindspot.judge import JudgeResult,
 
 ## 7. Files to Read First
 
-1. `C:\Users\Lekha\Projects\Blindspot\AGENTS.md` (§4 one call/candidate, §5 Dependency Model, §6 React Flow DATA contract bipartite)
+1. `C:\Users\Lekha\Projects\Blindspot\AGENTS.md` (§3 bounded evidence with states, §4 one call/candidate, §5 Dependency Model, §6 React Flow DATA + normalized_identity)
 2. `C:\Users\Lekha\Projects\Blindspot\PROJECT_PLAN.md` (§4 hybrid diagram, §6 DATA)
-3. `C:\Users\Lekha\Projects\Blindspot\STATE.md` (Stage 6 re-arched)
-4. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/model.py` (`Dependency:27`, `DependencyModel:108`)
-5. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/graph.py` (next, `build_graph` DATA contract)
+3. `C:\Users\Lekha\Projects\Blindspot\STATE.md` (redesign 2026-09-06)
+4. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/resolution.py` (`bounded_resolve:270`, `ResolutionResult`, `MAX_RESOLUTION_DEPTH`)
+5. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/filtering.py` (`EvidencePackage` with `resolution_status`, `_decide_with_project`)
+6. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/graph.py` (`_resource_key` normalized dedup)

@@ -19,6 +19,13 @@ from typing import Any, Dict, List, Tuple
 
 from .model import Dependency, DependencyModel
 
+# Grouped model (Prompt 2) — lazy to avoid circular
+try:
+    from .coupling import CouplingGroup, CouplingModel  # type: ignore
+except Exception:  # pragma: no cover
+    CouplingGroup = Any  # type: ignore
+    CouplingModel = Any  # type: ignore
+
 # ---------------------------------------------------------------------------
 # Node / Edge dataclasses — React Flow concept, JSON serializable
 # ---------------------------------------------------------------------------
@@ -73,12 +80,19 @@ def _service_id(name: str) -> str:
     return f"service:{name}"
 
 
-def _resource_key(resource: str, resource_type: str, value: Any) -> str:
-    """Deterministic resource identity — includes type so env_var:REDIS ≠ named_volume:REDIS.
+def _resource_key(resource: str, resource_type: str, value: Any, normalized_identity: Any = None) -> str:
+    """Deterministic resource identity — prefers normalized_identity when available.
 
+    - If normalized_identity present (exact external/internal), dedup by that (so
+      postgresql://user1@db:5432/calcom and postgresql://user2@db:5432/calcom share node)
+    - Else includes type so env_var:REDIS ≠ named_volume:REDIS.
     Matches spec: resource:env_var:DB_HOST=postgres, resource:named_volume:shared-data
     For env_var with value, suffix =value; for named_volume/shared-data value may be None.
     """
+    if normalized_identity:
+        # Normalize identity already includes scheme/host/port/db and is deterministic
+        # Prefix with resource_type to keep type distinction but share across variable names
+        return f"resource:{resource_type}:{normalized_identity}"
     base = f"resource:{resource_type}:{resource}"
     if value is not None and resource_type == "env_var":
         # Keep =value for display and dedup — same resource+value is same node
@@ -86,7 +100,10 @@ def _resource_key(resource: str, resource_type: str, value: Any) -> str:
     return base
 
 
-def _resource_display_name(resource: str, value: Any) -> str:
+def _resource_display_name(resource: str, value: Any, normalized_identity: Any = None) -> str:
+    if normalized_identity:
+        # Show normalized form for external confirmed / internal resources
+        return normalized_identity
     if value is not None:
         return f"{resource}={value}"
     return resource
@@ -145,17 +162,32 @@ def build_graph(
                     data={"name": svc},
                     # Future extensibility: directory, source_locations can be added to data without changing contract
                 )
-        # Resource node — deduped by resource_key (type + resource + value)
-        rid = _resource_key(dep.resource, dep.resource_type, dep.value)
+        # Resource node — deduped by normalized_identity when available else resource+value
+        norm_id = None
+        # Evidence stores normalized_identity in dep.evidence.to_dict() and directly dep.evidence.normalized_identity
+        try:
+            norm_id = dep.evidence.normalized_identity if hasattr(dep.evidence, "normalized_identity") else None
+        except Exception:
+            norm_id = None
+        rid = _resource_key(dep.resource, dep.resource_type, dep.value, normalized_identity=norm_id)
         if rid not in resource_nodes:
+            # Include normalized identity + protocol in node data for future frontend evidence panel
+            data: Dict[str, Any] = {
+                "name": _resource_display_name(dep.resource, dep.value, normalized_identity=norm_id),
+                "resource_type": dep.resource_type,
+                "value": dep.value,
+            }
+            if norm_id:
+                data["normalized_identity"] = norm_id
+                # Also expose protocol / status for evidence panel without breaking contract
+                if hasattr(dep.evidence, "resource_protocol") and dep.evidence.resource_protocol:
+                    data["resource_protocol"] = dep.evidence.resource_protocol
+                if hasattr(dep.evidence, "resolution_status"):
+                    data["resolution_status"] = dep.evidence.resolution_status
             resource_nodes[rid] = GraphNode(
                 id=rid,
                 type="resource",
-                data={
-                    "name": _resource_display_name(dep.resource, dep.value),
-                    "resource_type": dep.resource_type,
-                    "value": dep.value,
-                },
+                data=data,
                 # Extensible: later add evidence["source_locations"] etc. here without changing graph architecture
             )
         # Edges — two per dependency, Service → Resource (bipartite, never Service→Service)
@@ -211,6 +243,119 @@ def build_graph_data(
 ) -> GraphData:
     """Typed wrapper returning GraphData dataclass (JSON via to_dict()/to_json())."""
     raw = build_graph(model, meaningful_only=meaningful_only)
+    nodes = tuple(GraphNode(id=n["id"], type=n["type"], data=n["data"]) for n in raw["nodes"])
+    edges = tuple(GraphEdge(id=e["id"], source=e["source"], target=e["target"], data=e["data"]) for e in raw["edges"])
+    return GraphData(nodes=nodes, edges=edges)
+
+
+# ---------------------------------------------------------------------------
+# Grouped graph (Prompt 2 — resource-centric)
+# ---------------------------------------------------------------------------
+
+def _grouped_resource_key(group: Any) -> str:
+    """Grouping key already includes normalized dedup; use resource_type + identity."""
+    ident = group.resource_identity or f"{group.resource_type}:{group.grouping_key}"
+    return f"resource:{group.resource_type}:{ident}"
+
+
+def _grouped_display_name(group: Any) -> str:
+    if group.resource_identity:
+        return group.resource_identity
+    # Fallback for unknown
+    if group.observation_resources:
+        return f"{group.resource_type}:{','.join(sorted(group.observation_resources))}"
+    return group.grouping_key
+
+
+def build_graph_from_groups(
+    model: Any,  # CouplingModel
+    meaningful_only: bool = True,
+) -> Dict[str, Any]:
+    """Build React Flow graph from grouped CouplingModel (one node per resource group).
+
+    What enters: CouplingModel (resource-centric groups, one per normalized identity).
+    What leaves: same JSON contract {"nodes": [...], "edges": [...]} bipartite Service→Resource.
+    - One resource node per group (normalized identity already deduped)
+    - One service node per service
+    - One edge per service in group (not per pairwise observation)
+    - Deterministic, provider hidden, confidence on edge.
+    """
+    groups: List[Any]
+    if hasattr(model, "meaningful_only") and meaningful_only:
+        groups = list(model.meaningful_only().groups)  # type: ignore
+    elif hasattr(model, "groups"):
+        groups = list(model.groups)  # type: ignore
+    else:
+        groups = list(model)  # type: ignore
+
+    groups = sorted(groups, key=lambda g: g.grouping_key)
+
+    if not groups:
+        return {"nodes": [], "edges": []}
+
+    service_ids: Dict[str, GraphNode] = {}
+    resource_nodes: Dict[str, GraphNode] = {}
+    edges_by_id: Dict[str, GraphEdge] = {}
+
+    for group in groups:
+        # Service nodes
+        for svc in sorted(group.services):
+            sid = _service_id(svc)
+            if sid not in service_ids:
+                service_ids[sid] = GraphNode(id=sid, type="service", data={"name": svc})
+
+        # Resource node — one per group
+        rid = _grouped_resource_key(group)
+        if rid not in resource_nodes:
+            data: Dict[str, Any] = {
+                "name": _grouped_display_name(group),
+                "resource_type": group.resource_type,
+                "resource_protocol": group.resource_protocol,
+                "resolution_status": group.resolution_status,
+                "identity_strength": group.identity_strength,
+                "grouping_key": group.grouping_key,
+                "resource_identity": group.resource_identity,
+            }
+            # Keep display clean — remove None values
+            data = {k: v for k, v in data.items() if v is not None}
+            resource_nodes[rid] = GraphNode(id=rid, type="resource", data=data)
+
+        # Edges: one per service in group
+        for svc in sorted(group.services):
+            sid = _service_id(svc)
+            eid = _edge_id(sid, rid)
+            if eid not in edges_by_id:
+                edges_by_id[eid] = GraphEdge(id=eid, source=sid, target=rid, data={"confidence": float(group.confidence)})
+            else:
+                existing = edges_by_id[eid]
+                if float(group.confidence) > float(existing.data.get("confidence", 0)):
+                    edges_by_id[eid] = GraphEdge(id=eid, source=sid, target=rid, data={"confidence": float(group.confidence)})
+
+    nodes = sorted(list(service_ids.values()) + list(resource_nodes.values()), key=lambda n: n.id)
+    edges = sorted(edges_by_id.values(), key=lambda e: e.id)
+
+    try:
+        import networkx as nx  # type: ignore
+
+        G = nx.Graph()
+        for n in nodes:
+            G.add_node(n.id)
+        for e in edges:
+            G.add_edge(e.source, e.target)
+        for e in edges:
+            if e.source.startswith("service:") and e.target.startswith("service:"):
+                raise ValueError(f"Graph must not have service→service edge: {e.id}")
+    except ImportError:
+        pass
+
+    return {"nodes": [n.to_dict() for n in nodes], "edges": [e.to_dict() for e in edges]}
+
+
+def build_graph_data_from_groups(
+    model: Any,
+    meaningful_only: bool = True,
+) -> GraphData:
+    raw = build_graph_from_groups(model, meaningful_only=meaningful_only)
     nodes = tuple(GraphNode(id=n["id"], type=n["type"], data=n["data"]) for n in raw["nodes"])
     edges = tuple(GraphEdge(id=e["id"], source=e["source"], target=e["target"], data=e["data"]) for e in raw["edges"])
     return GraphData(nodes=nodes, edges=edges)

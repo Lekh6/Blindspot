@@ -21,12 +21,13 @@ from typing import List, Optional
 
 from dotenv import load_dotenv  # type: ignore[import-untyped]
 
+from .aggregation import aggregate_evidence_packages
+from .coupling import CouplingModel
 from .discovery import discover_candidates
 from .filtering import build_evidence_packages
-from .graph import build_graph
-from .model import DependencyModel
+from .graph import build_graph, build_graph_from_groups
 from .parser import parse_compose_file
-from .report import build_report
+from .report import build_grouped_report, build_report
 
 
 def find_compose(repo: Path, compose_arg: Optional[str]) -> Optional[Path]:
@@ -76,16 +77,14 @@ def run_one_repo(
     compose_file = find_compose(repo_path, str(compose_path) if compose_path else None)
     if compose_file is None or not compose_file.exists():
         result["error"] = f"docker-compose.yml not found in {repo_path} (tried {compose_path or 'auto'})"
-        # Still write empty report
-        from .model import DependencyModel as DM
-
-        model = DM([])
-        graph = build_graph(model, meaningful_only=True)
-        report = build_report(model, graph_data=graph, meaningful_only=meaningful_only)
+        # Still write empty grouped report
+        model = CouplingModel([])
+        graph = build_graph_from_groups(model, meaningful_only=True)
+        report = build_grouped_report(model, graph_data=graph, meaningful_only=meaningful_only)
         (out_dir / "report.json").write_text(report.to_json(), encoding="utf-8")
         (out_dir / "report.md").write_text(report.to_markdown(), encoding="utf-8")
         (out_dir / "graph.json").write_text(json.dumps(graph, indent=2, ensure_ascii=False), encoding="utf-8")
-        result.update({"candidates": 0, "packages": 0, "dependencies": 0, "meaningful": 0, "nodes": 0, "edges": 0})
+        result.update({"candidates": 0, "packages": 0, "observations": 0, "groups": 0, "meaningful": 0, "nodes": 0, "edges": 0})
         return result
 
     # Stage 1-3 deterministic
@@ -115,21 +114,23 @@ def run_one_repo(
 
         client = OpenRouterJudgeClient(thinking_level=thinking)  # type: ignore[arg-type]
 
-    # Stage 4: judge (0+1 per package, cached)
+    # Stage 3b: resource-centric aggregation (Prompt 2)
+    grouped = aggregate_evidence_packages(packages)
+
+    # Stage 4: judge — one LLM call per resource group (not per pair)
     c_path = str(cache_path) if cache_path else None
-    # Use per-repo cache file if not specified? Keep global cache.json for reuse
-    from .judge import judge_evidence_packages
+    from .judge import judge_grouped_packages
 
-    pairs = judge_evidence_packages(packages, client, cache_path=c_path, use_cache=bool(c_path))
+    pairs = judge_grouped_packages(grouped, client, cache_path=c_path, use_cache=bool(c_path))
 
-    # Stage 5 Model — service-to-resource, model hidden externally
-    model = DependencyModel.from_judgments(pairs)
+    # Stage 5 Model — resource-centric groups, model hidden externally
+    model = CouplingModel.from_grouped_judgments(pairs)
 
-    # Stage 6 Graph — DATA, bipartite
-    graph = build_graph(model, meaningful_only=meaningful_only)
+    # Stage 6 Graph — DATA, bipartite (one node per group)
+    graph = build_graph_from_groups(model, meaningful_only=meaningful_only)
 
-    # Stage 7 Report — human-readable, model hidden
-    report = build_report(model, graph_data=graph, meaningful_only=meaningful_only)
+    # Stage 7 Report — human-readable grouped report
+    report = build_grouped_report(model, graph_data=graph, meaningful_only=meaningful_only)
 
     # Write out files (model hidden)
     (out_dir / "report.json").write_text(report.to_json(), encoding="utf-8")
@@ -142,7 +143,8 @@ def run_one_repo(
                 "model": "report_log",
                 "provider": provider,
                 "thinking": thinking,
-                "dependencies_log": model.to_log_list(),
+                "coupling_log": model.to_log_list(),
+                "grouped": True,
             },
             indent=2,
             ensure_ascii=False,
@@ -155,8 +157,10 @@ def run_one_repo(
             "compose": str(compose_file),
             "candidates": len(candidates),
             "packages": len(packages),
-            "dependencies": len(model.dependencies),
-            "meaningful": len(model.meaningful_only().dependencies),
+            "observations": len(packages),
+            "groups": len(model.groups),
+            "dependencies": len(model.groups),  # alias for backward compat
+            "meaningful": len(model.meaningful_only().groups),
             "reported": len(report.findings),
             "nodes": len(graph["nodes"]),
             "edges": len(graph["edges"]),
@@ -199,11 +203,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     cache_path = None if args.cache.lower() == "none" else Path(args.cache)
     meaningful_only = not args.all
 
-    # Header (ASCII for Windows cp1252 safety)
-    print("BlindSpot -- Tier 1 pipeline: Parse -> Discovery -> Filtering -> Judge -> Model -> Graph -> Report")
-    print(f"Provider: {args.provider}  Thinking: {args.thinking}  Cache: {args.cache}  Out: {out_root}")
-    print(f"Repos: {', '.join(args.repos)}")
-    print("")
+    # Minimal header — only provider/thinking/out as requested
+    print(f"Provider: {args.provider}  Thinking: {args.thinking}  Out: {out_root}")
 
     summaries = []
     for repo_str in args.repos:
@@ -214,7 +215,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         # If repo_str is file, use its parent
         if repo.is_file():
             repo = repo.parent
-        print(f"--- {repo} ---".encode('utf-8', errors='replace').decode('utf-8'))
         try:
             res = run_one_repo(repo, Path(args.compose) if args.compose else None, out_root, args.provider, args.thinking, cache_path, meaningful_only)
         except Exception as e:
@@ -225,22 +225,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
         if res.get("error"):
             print(f"  {res['error']}")
-        print(f"  compose: {res.get('compose', 'not found')}")
-        print(f"  candidates: {res.get('candidates',0)} -> packages: {res.get('packages',0)} -> dependencies: {res.get('dependencies',0)} (meaningful {res.get('meaningful',0)} reported {res.get('reported',0)})")
-        print(f"  graph: {res.get('nodes',0)} nodes, {res.get('edges',0)} edges")
-        print(f"  out: {res['out_dir']}/report.json + report.md + graph.json (model hidden, see log.json for provider)")
-        print("")
+        # Minimal per-repo output — details remain in report.json/graph.json
+        print(f"Out: {res['out_dir']}/report.json + report.md + graph.json")
         summaries.append(res)
 
-    # Final table
-    if len(summaries) > 1:
-        print("Summary across repos:")
-        print(f"{'repo':<30} {'cand':>6} {'pkgs':>6} {'deps':>6} {'mean':>6} {'nodes':>6} {'edges':>6}")
-        for r in summaries:
-            print(f"{Path(r['repo']).name:<30} {r.get('candidates',0):>6} {r.get('packages',0):>6} {r.get('dependencies',0):>6} {r.get('meaningful',0):>6} {r.get('nodes',0):>6} {r.get('edges',0):>6}")
-        print("")
-        print(f"All reports in {out_root}/<repo>/ -- open report.md in any markdown viewer. Graph JSON is React Flow ready.")
-
+    # No summary table — minimal output as requested (details in report.json)
     return 0
 
 

@@ -20,6 +20,16 @@ from dataclasses import dataclass, replace, field, asdict
 from typing import List, Tuple, Dict, Optional, Any
 
 from .discovery import Candidate
+from .resolution import (
+    ResolutionResult,
+    ResolutionStatus,
+    IdentityStrength,
+    bounded_resolve,
+    STATUS_INTERNAL,
+    STATUS_EXTERNAL_CONFIRMED,
+    STATUS_UNRESOLVED,
+    STATUS_PARTIAL,
+)
 
 # Forward import for type hints (avoid circular at runtime we import under TYPE_CHECKING)
 try:
@@ -70,8 +80,10 @@ class EvidencePackage:
 
     Required:
       service_a, service_b, resource, resource_type, value, evidence (base)
-    Deterministically resolved context:
-      resolved_service, resolved_image, is_internal, reference_type, volume info
+    Deterministically resolved context (legacy + new resolution model):
+      resolved_service, resolved_image, is_internal, reference_type (legacy mapping)
+      resolution_status: internal | external_confirmed | unresolved | partial  (new distinct states)
+      resource_protocol, normalized_identity, identity_strength, resolution_chain, final_value
     Small relevant surrounding config:
       related_config {service -> {key: value}}
     Filtering signals:
@@ -87,11 +99,23 @@ class EvidencePackage:
     value: Optional[str]
     evidence: str  # base evidence from discovery
 
-    # Resolved context
+    # Resolved context — legacy fields (derived from new resolution for backward compat)
     resolved_service: Optional[str] = None  # e.g. "postgres" if value resolves to compose service
     resolved_image: Optional[str] = None  # e.g. "postgres:16"
-    is_internal: Optional[bool] = None  # True if compose_service/named_volume, False if external, None unknown
-    reference_type: str = "unknown"  # "compose_service" | "named_volume" | "external" | "unknown"
+    is_internal: Optional[bool] = None  # True if internal, False if external_confirmed, None if unresolved/partial
+    reference_type: str = "unknown"  # legacy: "compose_service" | "named_volume" | "external" | "unknown" | "partial"
+
+    # New deterministic resolution fields
+    resolution_status: ResolutionStatus = STATUS_UNRESOLVED  # distinct states: internal / external_confirmed / unresolved / partial
+    resource_protocol: Optional[str] = None  # e.g. postgresql, mysql, redis, None if unknown
+    normalized_identity: Optional[str] = None  # deterministic, credentials stripped, e.g. postgresql|host|5432|db
+    identity_strength: IdentityStrength = "unknown"  # exact | config | unknown
+    resolution_chain: Tuple[Dict[str, Any], ...] = field(default_factory=tuple)  # bounded list of ResolutionStep.to_dict()
+    final_value: Optional[str] = None  # after bounded resolution (may still contain unresolved placeholders)
+    original_value: Optional[str] = None
+    unresolved_vars: Tuple[str, ...] = field(default_factory=tuple)
+    is_cyclic: bool = False
+    depth_reached: int = 0
 
     # Small relevant surrounding configuration (bounded, sorted, max 5 per service)
     related_config: Dict[str, Dict[str, Optional[str]]] = field(default_factory=dict)
@@ -120,29 +144,47 @@ class EvidencePackage:
             "resolved_image": self.resolved_image,
             "is_internal": self.is_internal,
             "reference_type": self.reference_type,
+            "resolution_status": self.resolution_status,
+            "resource_protocol": self.resource_protocol,
+            "normalized_identity": self.normalized_identity,
+            "identity_strength": self.identity_strength,
+            "resolution_chain": list(self.resolution_chain),
+            "final_value": self.final_value,
+            "original_value": self.original_value,
+            "unresolved_vars": list(self.unresolved_vars),
+            "is_cyclic": self.is_cyclic,
+            "depth_reached": self.depth_reached,
             "related_config": {k: dict(v) for k, v in self.related_config.items()},
             "filtering_signals": {
                 "generic_variable": self.generic_variable,
                 "same_value": self.same_value,
                 "different_values": self.different_values,
                 "resolved_reference": self.reference_type,
+                "resolution_status": self.resolution_status,
+                "identity_strength": self.identity_strength,
             },
             "volume_targets": dict(self.volume_targets) if self.volume_targets else None,
         }
 
     def cache_key_dict(self) -> Dict[str, Any]:
         """Deterministic dict used for cache.json key generation — candidate + relevant evidence."""
-        # Include all fields that change meaning if evidence changes materially
+        # Include all fields that materially change meaning if evidence changes
         return {
             "service_a": self.service_a,
             "service_b": self.service_b,
             "resource": self.resource,
             "resource_type": self.resource_type,
             "value": self.value,
+            "final_value": self.final_value,
             "resolved_service": self.resolved_service,
             "resolved_image": self.resolved_image,
             "is_internal": self.is_internal,
             "reference_type": self.reference_type,
+            "resolution_status": self.resolution_status,
+            "resource_protocol": self.resource_protocol,
+            "normalized_identity": self.normalized_identity,
+            "identity_strength": self.identity_strength,
+            "unresolved_vars": list(self.unresolved_vars),
             "related_config": {k: dict(sorted(v.items())) for k, v in sorted(self.related_config.items())},
             "generic_variable": self.generic_variable,
             "same_value": self.same_value,
@@ -150,19 +192,32 @@ class EvidencePackage:
 
 
 def _is_host_like_resource(resource: str) -> bool:
-    """Values of HOST/URL/ADDRESS-like keys can plausibly resolve to a Compose service."""
+    """Legacy helper retained for compatibility; new resolver uses value structure not name."""
     upper = resource.upper()
     return any(k in upper for k in ("HOST", "URL", "ADDRESS", "ENDPOINT", "SERVER", "BROKER"))
 
-def _resolve_candidate(candidate: Candidate, project: Any) -> Tuple[Optional[str], Optional[str], Optional[bool], str, Optional[Dict[str, str]]]:
-    """Resolve what candidate value/resource points to using Project deterministically.
+def _resolve_candidate(candidate: Candidate, project: Any) -> Tuple[Optional[str], Optional[str], Optional[bool], str, Optional[Dict[str, str]], ResolutionResult]:
+    """Resolve what candidate value/resource points to using bounded_resolve deterministically.
 
-    Returns: (resolved_service, resolved_image, is_internal, reference_type, volume_targets)
+    For env_var with same value (candidate.value not None) -> bounded_resolve that value.
+    For env_var with different values (candidate.value is None, evidence notes different) ->
+      fetch each service's actual raw values and compare normalized identities.
+      If they converge to same normalized identity, keep that identity as evidence (credentials-stripped).
+      If not, return unresolved.
+
+    Returns: (resolved_service, resolved_image, is_internal, reference_type, volume_targets, ResolutionResult)
     No LLM calls — pure static analysis.
     """
+    # Named volume fast path
     if candidate.resource_type == "named_volume":
-        # Named volume is internal by definition (shared named volume identity)
-        # Collect targets for evidence completeness
+        rr_vol: ResolutionResult = bounded_resolve(
+            candidate.resource,
+            project,
+            candidate.service_a,
+            candidate.service_b,
+            resource=candidate.resource,
+            resource_type=candidate.resource_type,
+        )
         targets: Dict[str, str] = {}
         for svc_name in [candidate.service_a, candidate.service_b]:
             svc = project.services.get(svc_name) if project else None
@@ -171,31 +226,81 @@ def _resolve_candidate(candidate: Candidate, project: Any) -> Tuple[Optional[str
                     if vol.type == "named" and vol.source == candidate.resource:
                         targets[svc_name] = vol.target
                         break
-        return None, None, True, "named_volume", targets if targets else None
+        volume_targets = targets if targets else None
+        return rr_vol.resolved_service, rr_vol.resolved_image, True, "named_volume", volume_targets, rr_vol
 
-    # env_var
-    if candidate.value is None:
-        # No shared value to resolve (different values or both None)
-        return None, None, None, "unknown", None
+    # Different-values case: candidate.value is None but each service has its own value
+    if candidate.value is None and "different values" in candidate.evidence and project and hasattr(project, "services"):
+        try:
+            svc_a = project.services.get(candidate.service_a)
+            svc_b = project.services.get(candidate.service_b)
+            raw_a = svc_a.environment.get(candidate.resource) if svc_a else None
+            raw_b = svc_b.environment.get(candidate.resource) if svc_b else None
+            if raw_a is not None and raw_b is not None:
+                rr_a = bounded_resolve(raw_a, project, candidate.service_a, candidate.service_b, resource=candidate.resource, resource_type=candidate.resource_type)
+                rr_b = bounded_resolve(raw_b, project, candidate.service_a, candidate.service_b, resource=candidate.resource, resource_type=candidate.resource_type)
+                # If both normalize to same identity (credentials stripped), treat as same physical resource despite different raw config
+                if rr_a.normalized_identity and rr_a.normalized_identity == rr_b.normalized_identity and rr_a.resource_protocol == rr_b.resource_protocol:
+                    # Keep the shared normalized identity
+                    # Prefer the more resolved status (external_confirmed/internal) if either is exact
+                    # Choose rr_a (or rr_b) with exact status if available
+                    chosen = rr_a if rr_a.resolution_status in (STATUS_INTERNAL, STATUS_EXTERNAL_CONFIRMED) else rr_b
+                    # Build a merged result that reflects same-identity despite different raw values
+                    # We create a synthetic chain indicating both sides converge
+                    is_internal = True if chosen.resolution_status == STATUS_INTERNAL else (False if chosen.resolution_status == STATUS_EXTERNAL_CONFIRMED else None)
+                    ref = "compose_service" if chosen.resolution_status == STATUS_INTERNAL else ("external" if chosen.resolution_status == STATUS_EXTERNAL_CONFIRMED else ("partial" if chosen.resolution_status == STATUS_PARTIAL else "unknown"))
+                    # For evidence, create a synthetic resolution indicating convergence
+                    # Keep original chain from one side but note convergence
+                    volume_targets = None
+                    return chosen.resolved_service, chosen.resolved_image, is_internal, ref, volume_targets, chosen
+                # If raw values are same after stripping scheme not same, check if they are identical after resolution
+                if rr_a.final_value == rr_b.final_value and rr_a.final_value is not None:
+                    chosen = rr_a
+                    is_internal = True if chosen.resolution_status == STATUS_INTERNAL else (False if chosen.resolution_status == STATUS_EXTERNAL_CONFIRMED else None)
+                    ref = "compose_service" if chosen.resolution_status == STATUS_INTERNAL else ("external" if chosen.resolution_status == STATUS_EXTERNAL_CONFIRMED else ("partial" if chosen.resolution_status == STATUS_PARTIAL else "unknown"))
+                    return chosen.resolved_service, chosen.resolved_image, is_internal, ref, None, chosen
+        except Exception:
+            pass
+        # Different values that do not converge to same identity -> unresolved (will be filtered)
+        rr_un = ResolutionResult(
+            original_value=None,
+            final_value=None,
+            chain=(),
+            resolution_status=STATUS_UNRESOLVED,
+            resource_protocol=None,
+            normalized_identity=None,
+            identity_strength="unknown",
+            unresolved_vars=(),
+            is_cyclic=False,
+            depth_reached=0,
+        )
+        return None, None, None, "unknown", None, rr_un
 
-    # Only HOST/URL-like resources plausibly point to a service; DB_NAME etc. should not
-    # auto-resolve to an app service name (e.g. DB_NAME=orders → orders service is not a DB host)
-    if not _is_host_like_resource(candidate.resource):
-        return None, None, False, "external", None
+    # Same-value case (candidate.value not None) or no project context
+    rr: ResolutionResult = bounded_resolve(
+        candidate.value,
+        project,
+        candidate.service_a,
+        candidate.service_b,
+        resource=candidate.resource,
+        resource_type=candidate.resource_type,
+    )
+    # Legacy mapping for backward compat
+    if rr.resolution_status == STATUS_INTERNAL:
+        ref = "compose_service"
+        is_internal: Optional[bool] = True
+    elif rr.resolution_status == STATUS_EXTERNAL_CONFIRMED:
+        ref = "external"
+        is_internal = False
+    elif rr.resolution_status == STATUS_PARTIAL:
+        ref = "partial"
+        is_internal = None
+    else:
+        ref = "unknown"
+        is_internal = None
 
-    # Try direct service name match
-    if project and candidate.value in project.services:
-        svc = project.services[candidate.value]
-        return candidate.value, svc.image, True, "compose_service", None
-
-    # Handle value that looks like "host:port" or "host/db" — try prefix before : or /
-    base = candidate.value.split(":")[0].split("/")[0].strip()
-    if base and project and base in project.services:
-        svc = project.services[base]
-        return base, svc.image, True, "compose_service", None
-
-    # Not an internal compose service → external/unknown (e.g. external DB host, cloud URL)
-    return None, None, False, "external", None
+    volume_targets: Optional[Dict[str, str]] = None
+    return rr.resolved_service, rr.resolved_image, is_internal, ref, volume_targets, rr
 
 
 def _collect_related_config(candidate: Candidate, project: Any, max_per_service: int = 5) -> Dict[str, Dict[str, Optional[str]]]:
@@ -240,10 +345,10 @@ def _collect_related_config(candidate: Candidate, project: Any, max_per_service:
 def build_evidence_package(candidate: Candidate, project: Any) -> EvidencePackage:
     """Build one bounded evidence package for a surviving candidate.
 
-    Deterministically resolves what the value points to, collects related config,
+    Deterministically resolves what the value points to via bounded_resolve, collects related config,
     and captures filtering signals. No LLM calls.
     """
-    resolved_service, resolved_image, is_internal, reference_type, volume_targets = _resolve_candidate(candidate, project)
+    resolved_service, resolved_image, is_internal, reference_type, volume_targets, rr = _resolve_candidate(candidate, project)
     related_config = _collect_related_config(candidate, project)
     generic = _is_generic_key(candidate.resource) if candidate.resource_type == "env_var" else False
     same = candidate.value is not None
@@ -260,6 +365,16 @@ def build_evidence_package(candidate: Candidate, project: Any) -> EvidencePackag
         resolved_image=resolved_image,
         is_internal=is_internal,
         reference_type=reference_type,
+        resolution_status=rr.resolution_status,
+        resource_protocol=rr.resource_protocol,
+        normalized_identity=rr.normalized_identity,
+        identity_strength=rr.identity_strength,
+        resolution_chain=tuple(s.to_dict() for s in rr.chain),
+        final_value=rr.final_value,
+        original_value=rr.original_value,
+        unresolved_vars=rr.unresolved_vars,
+        is_cyclic=rr.is_cyclic,
+        depth_reached=rr.depth_reached,
         related_config=related_config,
         generic_variable=generic,
         same_value=same,
@@ -268,14 +383,64 @@ def build_evidence_package(candidate: Candidate, project: Any) -> EvidencePackag
     )
 
 
+def _decide_with_project(cand: Candidate, project: Any) -> Tuple[bool, str]:
+    """Project-aware decide: same as _decide but different-values may be kept if normalized identity converges."""
+    # Fast path for named_volume
+    if cand.resource_type == "named_volume":
+        return True, "shared named volume — likely coupling"
+    if cand.resource_type == "env_var":
+        if cand.value is None and "different values" in cand.evidence:
+            # Check if normalized identities converge (credentials stripped)
+            if project is not None and hasattr(project, "services"):
+                try:
+                    svc_a = project.services.get(cand.service_a)
+                    svc_b = project.services.get(cand.service_b)
+                    raw_a = svc_a.environment.get(cand.resource) if svc_a else None
+                    raw_b = svc_b.environment.get(cand.resource) if svc_b else None
+                    if raw_a is not None and raw_b is not None:
+                        from .resolution import bounded_resolve as _br
+                        rr_a = _br(raw_a, project, cand.service_a, cand.service_b, resource=cand.resource, resource_type=cand.resource_type)
+                        rr_b = _br(raw_b, project, cand.service_a, cand.service_b, resource=cand.resource, resource_type=cand.resource_type)
+                        if rr_a.normalized_identity and rr_a.normalized_identity == rr_b.normalized_identity:
+                            return True, f"different raw values but same normalized identity {rr_a.normalized_identity!r} — likely same physical resource (credentials stripped)"
+                        if rr_a.final_value and rr_a.final_value == rr_b.final_value:
+                            return True, f"different raw values but same resolved final value {rr_a.final_value!r} — likely same resource"
+                except Exception:
+                    pass
+            return False, f"same key {cand.resource!r} with different values — likely coincidence (e.g. PORT)"
+        if _is_generic_key(cand.resource):
+            return False, f"generic key {cand.resource!r} — standard port/debug/logging/generic noise"
+        if cand.value is not None:
+            return True, f"shared {cand.resource}={cand.value!r} — specific config, likely coupling"
+        else:
+            return True, f"shared key {cand.resource!r} with no value — possible coupling, needs LLM"
+    return True, "unknown resource_type — kept conservatively"
+
+
 def build_evidence_packages(candidates: List[Candidate], project: Any) -> List[EvidencePackage]:
-    """Filter candidates then build bounded evidence packages for survivors.
+    """Filter candidates (project-aware) then build bounded evidence packages for survivors.
 
     This is the Stage 3 combined entry point: deterministic filtering + evidence construction.
     Returns evidence packages sorted deterministically (same key as discovery).
+    Uses project-aware decision so different raw values that normalize to same physical resource are kept.
     """
-    kept = filter_candidates(candidates)
-    packages = [build_evidence_package(c, project) for c in kept]
+    # Project-aware filtering: keep if _decide_with_project says keep
+    kept: List[Candidate] = []
+    for cand in candidates:
+        keep, _ = _decide_with_project(cand, project)
+        if keep:
+            # Also apply legacy generic filter via _decide for consistency when project None? already handled
+            kept.append(cand)
+    # Enrich evidence for LLM with filtering rationale
+    packages: List[EvidencePackage] = []
+    for cand in kept:
+        keep, reason = _decide_with_project(cand, project)
+        # Build package then enrich evidence string
+        pkg = build_evidence_package(cand, project)
+        enriched_evidence = f"{cand.evidence} | filter: kept — {reason}"
+        from dataclasses import replace as _replace
+        pkg = _replace(pkg, evidence=enriched_evidence)
+        packages.append(pkg)
     packages.sort(key=lambda p: (p.service_a, p.service_b, p.resource_type, p.resource))
     return packages
 
@@ -285,10 +450,16 @@ def filter_and_build_evidence(candidates: List[Candidate], project: Any) -> Tupl
 
     Useful for callers that need candidate list for filtering metrics and packages for LLM judge.
     """
-    kept = filter_candidates(candidates)
-    packages = [build_evidence_package(c, project) for c in kept]
-    packages.sort(key=lambda p: (p.service_a, p.service_b, p.resource_type, p.resource))
-    return kept, packages
+    pkgs = build_evidence_packages(candidates, project)
+    # Derive kept candidates from pkgs (for reporting)
+    kept_cands: List[Candidate] = []
+    for pkg in pkgs:
+        # Find original candidate matching package identity
+        for cand in candidates:
+            if cand.service_a == pkg.service_a and cand.service_b == pkg.service_b and cand.resource == pkg.resource and cand.resource_type == pkg.resource_type:
+                kept_cands.append(cand)
+                break
+    return kept_cands, pkgs
 
 
 # ---------------------------------------------------------------------------

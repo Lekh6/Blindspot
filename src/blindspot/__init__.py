@@ -21,15 +21,34 @@ from .judge import (
     GeminiJudgeClient,
     JudgeResult,
     OpenRouterJudgeClient,
+    build_grouped_judge_prompt,
     build_judge_prompt,
     failsafe_result,
     judge_evidence_package,
     judge_evidence_packages,
-    placeholder_future_judge,
+    judge_grouped_package,
+    judge_grouped_packages,
 )
-from .graph import GraphData, GraphEdge, GraphNode, build_graph, build_graph_data
+from .graph import (
+    GraphData,
+    GraphEdge,
+    GraphNode,
+    build_graph,
+    build_graph_data,
+    build_graph_data_from_groups,
+    build_graph_from_groups,
+)
 from .model import Dependency, DependencyModel, build_dependency_model
-from .report import ReportData, ReportFinding, build_report
+from .coupling import CouplingGroup, CouplingModel, build_coupling_model
+from .aggregation import GroupedEvidencePackage, aggregate_evidence_packages
+from .report import (
+    GroupedReportData,
+    GroupedReportFinding,
+    ReportData,
+    ReportFinding,
+    build_grouped_report,
+    build_report,
+)
 from .parser import (
     Project,
     Service,
@@ -41,15 +60,26 @@ from .parser import (
     parse_compose_file,
     parse_project,
 )
+from .resolution import (
+    ResolutionResult,
+    ResolutionStep,
+    bounded_resolve,
+    build_lookup,
+)
 
 __all__ = [
     "Candidate",
+    "CouplingGroup",
+    "CouplingModel",
     "Dependency",
     "DependencyModel",
     "EvidencePackage",
     "GraphData",
     "GraphEdge",
     "GraphNode",
+    "GroupedEvidencePackage",
+    "GroupedReportData",
+    "GroupedReportFinding",
     "JudgeResult",
     "Project",
     "ReportData",
@@ -66,11 +96,17 @@ __all__ = [
     "THINKING_BUDGETS",
     "GeminiJudgeClient",
     "OpenRouterJudgeClient",
+    "aggregate_evidence_packages",
+    "build_coupling_model",
     "build_dependency_model",
     "build_evidence_package",
     "build_evidence_packages",
     "build_graph",
     "build_graph_data",
+    "build_graph_data_from_groups",
+    "build_graph_from_groups",
+    "build_grouped_report",
+    "build_grouped_judge_prompt",
     "build_judge_prompt",
     "build_report",
     "discover_candidates",
@@ -80,6 +116,8 @@ __all__ = [
     "filter_with_reasons",
     "judge_evidence_package",
     "judge_evidence_packages",
+    "judge_grouped_package",
+    "judge_grouped_packages",
     "load_env_file",
     "normalize_environment",
     "normalize_volume",

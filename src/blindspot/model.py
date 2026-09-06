@@ -221,7 +221,7 @@ class DependencyModel:
         deps: List[Dependency] = []
         for item in data:
             ev = item["evidence"]
-            # Reconstruct EvidencePackage from its to_dict() shape
+            # Reconstruct EvidencePackage from its to_dict() shape (new resolution fields optional for backward compat)
             # evidence dict has filtering_signals + evidence fields; we need to map back
             pkg = EvidencePackage(
                 service_a=item["service_a"],
@@ -234,6 +234,16 @@ class DependencyModel:
                 resolved_image=ev.get("resolved_image"),
                 is_internal=ev.get("is_internal"),
                 reference_type=ev.get("reference_type", "unknown"),
+                resolution_status=ev.get("resolution_status", ev.get("reference_type", "unknown") if ev.get("reference_type") in ("internal","external_confirmed","partial","unresolved") else "unresolved"),
+                resource_protocol=ev.get("resource_protocol"),
+                normalized_identity=ev.get("normalized_identity"),
+                identity_strength=ev.get("identity_strength", "unknown"),
+                resolution_chain=tuple(ev.get("resolution_chain", [])),
+                final_value=ev.get("final_value", item.get("value")),
+                original_value=ev.get("original_value", item.get("value")),
+                unresolved_vars=tuple(ev.get("unresolved_vars", [])),
+                is_cyclic=ev.get("is_cyclic", False),
+                depth_reached=ev.get("depth_reached", 0),
                 related_config=ev.get("related_config", {}),
                 generic_variable=ev.get("filtering_signals", {}).get("generic_variable", False),
                 same_value=ev.get("filtering_signals", {}).get("same_value", False),
