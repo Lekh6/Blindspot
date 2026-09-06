@@ -26,22 +26,20 @@ Standard tracing (Dynatrace/Datadog) only sees network calls — these couplings
 
 ---
 
-## Pipeline — 7 Stages, End-to-End (Prompt 2: Resource-Centric)
+## Pipeline — 7 Stages, End-to-End
 
 ```
 Input (docker-compose.yml + .env + env_file)
   → 1 Parse+Normalize (image, env_file, ${VAR}, ${VAR:-default}, unresolved preserved)
   → 2 Candidate Discovery (broad, deterministic: shared env_var + named_volume, value split)
-  → 3 Filtering + Bounded Evidence + Resource Identity (GENERIC_ENV_KEYS drop PORT/DEBUG, bounded chain/cycle/depth MAX_RESOLUTION_DEPTH=10, normalized postgresql|host|port|db stripped, states internal/external_confirmed/partial/unresolved, strength exact/config/unknown)
-  → 3b Resource-Centric Aggregation (group by normalized_identity — one bounded grouped evidence per shared resource, observations preserved, deterministic, no repo scan)
-  → 4 LLM Judge (0 for noise + 1 call per resource group — not per pair, structured verdict/confidence/reason, cache.json sha256 on grouped key, failsafe uncertain 0.5)
-  → 5 Coupling Model (resource-centric groups: resource identity/protocol/status/strength + services[] + observations + verdict/confidence/reason, _model hidden)
-  → 6 Resource Graph (React Flow DATA {"nodes","edges"} bipartite Service → Resource, one node per group, one edge per service in group, confidence preserved, model hidden, deterministic, JSON serializable)
-  → 7 Report (grouped human-readable: conclusion → evidence → technical details, summary distinguishes services_analyzed/resource_groups/observations/meaningful_groups)
+  → 3 Filtering + Bounded Evidence + Resource Identity (drop generic PORT/DEBUG, bounded chain/cycle/depth, normalized postgresql|host|port|db stripped, states internal/external_confirmed/partial/unresolved, strength exact/config/unknown)
+  → 3b Resource-Centric Aggregation (group by normalized resource identity — one bounded grouped evidence per shared resource, observations preserved, deterministic, no repo scan)
+  → 4 LLM Judge (0 for noise + 1 call per resource group — not per pair, structured verdict/confidence/reason, cached, failsafe uncertain 0.5)
+  → 5 Coupling Model (resource-centric groups: identity/protocol/status/strength + services[] + observations + verdict/confidence/reason)
+  → 6 Resource Graph (React Flow DATA {"nodes","edges"} bipartite Service → Resource, one node per group, one edge per service in group, confidence preserved, deterministic, JSON serializable)
+  → 7 Report (human-readable: conclusion → evidence → technical details, summary distinguishes services/resource groups/observations)
   → CLI out/<repo>/report.json + report.md + graph.json (+ report.log.json internal)
 ```
-
-**Completed:** Stages 1–7, **92 tests passing** (`test_parser 32 + test_discovery 8 + test_filtering 8 + test_graph 13 + test_resolution 17 + test_grouping 14`), resource-centric aggregation, deterministic resolution with chain/identity, provider-agnostic.
 
 ---
 
@@ -161,7 +159,7 @@ type out\calcom\report.log.json
 
 ```bash
 # Git Bash
-PYTHONPATH=src .venv/Scripts/python -m pytest -v   # 78 tests: test_parser 32 + test_discovery 8 + test_filtering 8 + test_graph 13 + test_resolution 17
+PYTHONPATH=src .venv/Scripts/python -m pytest -v
 PYTHONPATH=src .venv/Scripts/python -c "from blindspot.parser import parse_compose_file; from blindspot.discovery import discover_candidates; from blindspot.filtering import build_evidence_packages; p=parse_compose_file('fixtures/shared_env/docker-compose.yml'); print([pkg.to_dict() for pkg in build_evidence_packages(discover_candidates(p), p)])"
 
 REM Windows
@@ -170,7 +168,7 @@ set PYTHONPATH=src && .venv\Scripts\python -m pytest -v
 
 ---
 
-## Graph DATA Contract — React Flow Ready (Grouped)
+## Graph DATA Contract — React Flow Ready
 
 Stage 6 produces provider-agnostic data, not an image. Frontend handles layout/zoom/pan/selection/evidence panels.
 
@@ -195,9 +193,9 @@ Stage 6 produces provider-agnostic data, not an image. Frontend handles layout/z
 
 ---
 
-## Report Format (Grouped, Human-Readable)
+## Report Format
 
-`report.json` (grouped):
+`report.json`:
 ```json
 {
   "summary": {"services_analyzed": 3, "resource_groups": 1, "observations": 6, "meaningful_groups": 1, "coincidental_groups": 0, "uncertain_groups": 0, "resources": 1},
@@ -220,7 +218,7 @@ Stage 6 produces provider-agnostic data, not an image. Frontend handles layout/z
 }
 ```
 
-`report.md` (grouped, per spec §13-19):
+`report.md`:
 ```
 # BlindSpot Report
 Generated: 2026-09-06T19:00:48Z
@@ -288,11 +286,10 @@ Python 3.10+, `pyyaml`, `python-dotenv`, `networkx`, `matplotlib` (optional), `g
 
 ## Documentation
 
-* `AGENTS.md` — hybrid architecture (§3 bounded evidence with resolution states, §4 one call/candidate, §5 service-to-resource, §6 React Flow DATA, §7 Report)
-* `STATE.md` — Stages 1–7 DONE + Tier 1 redesign, 78 tests
-* `DECISIONS.md` — D-021 hybrid, D-022 image, D-023 bounded evidence, D-025 provider-agnostic judge, D-026 model hidden, D-027 Graph DATA, D-028 Report+CLI, D-029 resolution/identity redesign
+* `AGENTS.md` — architecture and pipeline design
+* `STATE.md` — current project state
+* `DECISIONS.md` — architecture decisions
+* `HANDOFF.md` — handoff notes
+* `PROJECT_PLAN.md` — project plan
 
-This is Tier 1 finished + redesign — Tier 2 Kubernetes (ConfigMap/Secret/shared-volume via same `Filtering → Judge → Model → Graph → Report` pipeline) is next and the whole point.
-
-Windows: `set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low` (or `.venv\Scripts\python` if `python` is system python). Then `set PYTHONPATH=src && python -m blindspot.cli --help` to start.
-Git Bash: `PYTHONPATH=src .venv/Scripts/python -m blindspot.cli --help`
+Run `set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low` (Windows, or `.venv\Scripts\python` if `python` is system python) or `PYTHONPATH=src .venv/Scripts/python -m blindspot.cli --help` (Git Bash) to start.
