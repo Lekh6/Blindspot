@@ -392,14 +392,26 @@ class GroupedReportData:
     summary: Dict[str, Any]
     graph_summary: Optional[Dict[str, Any]] = None
     generated_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    # New accounting (prompt §1-5) — optional for backward compat
+    application: Optional[Dict[str, Any]] = None
+    inputs: Optional[Dict[str, Any]] = None
+    analysis: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "summary": dict(self.summary),
-            "graph_summary": dict(self.graph_summary) if self.graph_summary else None,
-            "generated_at": self.generated_at,
-            "findings": [f.to_dict() for f in self.findings],
-        }
+        d: Dict[str, Any] = {}
+        # New top-level accounting (prompt §5)
+        if self.application is not None:
+            d["application"] = dict(self.application)
+        if self.inputs is not None:
+            d["inputs"] = dict(self.inputs)
+        if self.analysis is not None:
+            d["analysis"] = dict(self.analysis)
+        # Backward compat: keep summary/graph_summary at top level as well
+        d["summary"] = dict(self.summary)
+        d["graph_summary"] = dict(self.graph_summary) if self.graph_summary else None
+        d["generated_at"] = self.generated_at
+        d["findings"] = [f.to_dict() for f in self.findings]
+        return d
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False, sort_keys=False)
@@ -410,33 +422,120 @@ class GroupedReportData:
         lines.append("")
         lines.append(f"Generated: {self.generated_at}")
         lines.append("")
-        # Summary — required concepts distinct
+        # Analysis input (prompt §6)
+        if self.application or self.inputs:
+            lines.append("## Analysis input")
+            lines.append("")
+            if self.application and self.application.get("root"):
+                lines.append("Application root:")
+                lines.append(self.application["root"])
+                lines.append("")
+            if self.inputs and self.inputs.get("sources_used"):
+                lines.append("Compose configuration used:")
+                for src in self.inputs["sources_used"]:
+                    lines.append(f"- {src}")
+                lines.append("")
+            elif self.inputs is not None:
+                # Explicitly show when no sources used (parsing failure)
+                if self.inputs.get("sources_used") == []:
+                    lines.append("Compose configuration used:")
+                    lines.append("- (none — no supported Compose file found)")
+                    lines.append("")
+        # Pipeline summary (prompt §2-4, §6) — separate services from candidates
         s = self.summary
-        lines.append("## Summary")
+        a = self.analysis if self.analysis is not None else {}
+        # Prefer analysis for detailed counts, fallback to summary
+        parsed = a.get("parsed", {}) if isinstance(a, dict) else {}
+        discovery = a.get("discovery", {}) if isinstance(a, dict) else {}
+        aggregation = a.get("aggregation", {}) if isinstance(a, dict) else {}
+        judgment = a.get("judgment", {}) if isinstance(a, dict) else {}
+        graph_a = a.get("graph", {}) if isinstance(a, dict) else {}
+        lines.append("## Pipeline summary")
         lines.append("")
-        lines.append(f"Services analyzed: {s.get('services_analyzed', s.get('services', 0))}")
-        lines.append(f"Shared resource groups: {s.get('resource_groups', 0)}")
-        lines.append(f"Meaningful coupling groups: {s.get('meaningful_groups', 0)}")
-        lines.append(f"Configuration observations: {s.get('observations', 0)}")
+        # Configuration parsed
+        lines.append("Configuration parsed:")
+        services_cnt = parsed.get("services", s.get("services_analyzed", s.get("services", 0)))
+        named_vol_cnt = parsed.get("named_volumes", s.get("named_volumes", 0))
+        # Fallback for old reports without named_volumes
+        lines.append(f"- Services discovered: {services_cnt}")
+        lines.append(f"- Named volumes discovered: {named_vol_cnt}")
+        lines.append("")
+        # Dependency analysis
+        lines.append("Dependency analysis:")
+        raw_candidates = discovery.get("raw_candidates", s.get("raw_candidates", s.get("candidates", 0)))
+        observations = discovery.get("observations", s.get("observations", 0))
+        # Also support filtered_out
+        filtered_out = discovery.get("filtered_out", max(0, raw_candidates - observations) if raw_candidates is not None else 0)
+        resource_groups = aggregation.get("resource_groups", s.get("resource_groups", s.get("total", 0)))
+        groups_judged = judgment.get("groups_judged", s.get("groups_judged", resource_groups))
+        meaningful = judgment.get("meaningful", s.get("meaningful_groups", s.get("meaningful", 0)))
+        # Use analysis for graph, else graph_summary
+        if graph_a:
+            nodes = graph_a.get("nodes", 0)
+            edges = graph_a.get("edges", 0)
+        elif self.graph_summary:
+            nodes = self.graph_summary.get("nodes", 0)
+            edges = self.graph_summary.get("edges", 0)
+        else:
+            nodes = 0
+            edges = 0
+        lines.append(f"- Candidates generated: {raw_candidates}")
+        lines.append(f"- Observations: {observations}")
+        if filtered_out and raw_candidates:
+            lines.append(f"- Candidates filtered out: {filtered_out}")
+        lines.append(f"- Shared resource groups: {resource_groups}")
+        lines.append(f"- Groups judged: {groups_judged}")
+        # Optionally show LLM calls vs cache if available
+        if "llm_calls" in judgment or "cache_hits" in judgment:
+            if judgment.get("llm_calls") is not None:
+                lines.append(f"- LLM calls: {judgment.get('llm_calls', 0)}")
+            if judgment.get("cache_hits") is not None:
+                lines.append(f"- Cache hits: {judgment.get('cache_hits', 0)}")
+        lines.append(f"- Meaningful couplings: {meaningful}")
+        lines.append("")
         if s.get('coincidental_groups', 0) or s.get('uncertain_groups', 0):
             lines.append(f"Coincidental groups: {s.get('coincidental_groups', 0)}")
             lines.append(f"Uncertain groups: {s.get('uncertain_groups', 0)}")
-        if self.graph_summary:
-            gs = self.graph_summary
-            lines.append(f"Graph: {gs.get('nodes',0)} nodes ({gs.get('service_nodes',0)} services, {gs.get('resource_nodes',0)} resources), {gs.get('edges',0)} edges")
+            lines.append("")
+        lines.append("Graph:")
+        lines.append(f"- Nodes: {nodes}")
+        lines.append(f"- Edges: {edges}")
         lines.append("")
+        # Explanations for legitimate zero-result runs (prompt §7-9)
+        if services_cnt and services_cnt > 0 and raw_candidates == 0 and observations == 0 and resource_groups == 0:
+            lines.append("## Result")
+            lines.append("")
+            lines.append(f"BlindSpot successfully parsed {services_cnt} services and {named_vol_cnt} named volume{'s' if named_vol_cnt != 1 else ''}.")
+            lines.append("")
+            lines.append("No Tier 1 dependency candidates were generated from the supported configuration signals found in the analyzed Compose configuration.")
+            lines.append("")
+            lines.append("This does not mean the services have no dependencies. It means the available Tier 1 configuration evidence did not establish a shared resource relationship for further analysis.")
+            lines.append("")
+        elif raw_candidates and raw_candidates > 0 and observations == 0:
+            lines.append("## Result")
+            lines.append("")
+            lines.append("Candidates were generated from the configuration, but none survived deterministic filtering as meaningful shared-resource evidence.")
+            lines.append("")
+            if filtered_out:
+                lines.append(f"Candidates removed by deterministic filtering: {filtered_out}")
+                lines.append("")
+        elif observations and resource_groups and observations > resource_groups:
+            lines.append("## Result")
+            lines.append("")
+            lines.append(f"{observations} configuration observations were grouped into {resource_groups} shared resource relationship{'s' if resource_groups != 1 else ''}.")
+            lines.append("")
 
         # Overview plain language when findings exist
         if self.findings:
-            meaningful = [f for f in self.findings if f.verdict == "meaningful"]
-            if meaningful:
+            meaningful_f = [f for f in self.findings if f.verdict == "meaningful"]
+            if meaningful_f:
                 # Describe first meaningful group generically
-                first = meaningful[0]
+                first = meaningful_f[0]
                 proto = first.resource_protocol or "resource"
                 svc_count = first.service_count
                 lines.append(
-                    f"BlindSpot found {len(meaningful)} shared {proto} resource configuration"
-                    f"{'s' if len(meaningful)!=1 else ''} used by {svc_count} service{'s' if svc_count!=1 else ''}."
+                    f"BlindSpot found {len(meaningful_f)} shared {proto} resource configuration"
+                    f"{'s' if len(meaningful_f)!=1 else ''} used by {svc_count} service{'s' if svc_count!=1 else ''}."
                     " This may create implicit coupling through shared infrastructure or state."
                 )
                 lines.append("")
@@ -446,7 +545,16 @@ class GroupedReportData:
                 lines.append("")
 
         if not self.findings:
-            lines.append("_No meaningful coupling groups found — all candidates were filtered as generic or judged coincidental/uncertain._")
+            if services_cnt == 0:
+                lines.append("_No services discovered — no supported Compose configuration found or parsed._")
+            elif raw_candidates == 0 and observations == 0:
+                # Already explained above, keep generic but distinguish from parsing failure
+                lines.append("_No Tier 1 candidates generated — no supported shared-resource configuration evidence found._")
+            else:
+                lines.append("_No meaningful coupling groups found — all candidates were filtered as generic or judged coincidental/uncertain._")
+            lines.append("")
+            lines.append("---")
+            lines.append("BlindSpot Tier 1 identifies shared resource-level configuration and potential implicit coupling. It does not claim a specific application-level dependency without source-level evidence.")
             return "\n".join(lines)
 
         # Each finding — conclusion first
@@ -534,10 +642,17 @@ def build_grouped_report(
     model: Any,  # CouplingModel
     graph_data: Optional[Dict[str, Any]] = None,
     meaningful_only: bool = True,
+    total_services: Optional[int] = None,
+    accounting: Optional[Dict[str, Any]] = None,
 ) -> GroupedReportData:
     """Build grouped report from CouplingModel.
 
     Summary distinguishes: services_analyzed, resource_groups, observations, meaningful_groups, etc.
+    total_services: total services parsed from compose (if provided, used for services_analyzed;
+        otherwise falls back to union of services in groups for backward compat).
+    accounting: optional precomputed analysis accounting from CLI (prompt §1-5).
+        If provided, its parsed/discovery/aggregation/judgment/graph counts are used for
+        the new top-level analysis fields, ensuring report reflects real pipeline objects.
     """
     # For summary, need observations count across all groups (including coincidental)
     all_groups = list(model.groups) if hasattr(model, "groups") else []
@@ -546,16 +661,20 @@ def build_grouped_report(
 
     findings = tuple(GroupedReportFinding.from_group(g) for g in displayed_groups)
 
-    # Services analyzed: union across all groups
-    all_services = set()
-    for g in all_groups:
-        all_services.update(g.services)
+    # Services analyzed: prefer total_services from Project, else union across groups
+    if total_services is not None:
+        services_analyzed = int(total_services)
+    else:
+        all_services = set()
+        for g in all_groups:
+            all_services.update(g.services)
+        services_analyzed = len(all_services)
 
     observations_total = sum(g.evidence_count for g in all_groups)
 
     summary: Dict[str, Any] = {
-        "services_analyzed": len(all_services),
-        "services": len(all_services),  # alias for backward compat
+        "services_analyzed": services_analyzed,
+        "services": services_analyzed,  # alias for backward compat
         "resource_groups": len(all_groups),
         "observations": observations_total,
         "meaningful_groups": len([g for g in all_groups if g.verdict == "meaningful"]),
@@ -581,4 +700,37 @@ def build_grouped_report(
             "resource_nodes": len([n for n in nodes if n.get("type") == "resource"]),
         }
 
-    return GroupedReportData(findings=findings, summary=summary, graph_summary=graph_summary)
+    # Build new accounting fields (prompt §5) from passed accounting or fallback to summary
+    if accounting is not None:
+        # Use provided accounting (from CLI) for top-level application/inputs/analysis
+        application = {"root": accounting.get("application_root", "")}
+        inputs = {"sources_used": accounting.get("sources", {}).get("used", [])}
+        # Also include discovered/parsed counts if available for debugging
+        if "sources" in accounting:
+            inputs["discovered"] = accounting["sources"].get("discovered", [])
+            inputs["successfully_parsed"] = accounting["sources"].get("successfully_parsed", [])
+        analysis = {
+            "parsed": accounting.get("parsed", {"services": services_analyzed, "named_volumes": 0}),
+            "discovery": accounting.get("discovery", {"raw_candidates": 0, "observations": observations_total}),
+            "aggregation": accounting.get("aggregation", {"resource_groups": len(all_groups)}),
+            "judgment": accounting.get("judgment", {"groups_judged": len(all_groups), "meaningful": summary["meaningful_groups"], "coincidental": summary["coincidental_groups"], "uncertain": summary["uncertain_groups"]}),
+            "graph": accounting.get("graph", {"nodes": graph_summary["nodes"] if graph_summary else 0, "edges": graph_summary["edges"] if graph_summary else 0}),
+        }
+    else:
+        # Fallback for tests / direct calls without CLI accounting
+        application = None
+        inputs = None
+        # Synthesize minimal analysis from summary for backward compat
+        analysis = {
+            "parsed": {"services": services_analyzed, "named_volumes": 0},
+            "discovery": {"raw_candidates": summary.get("raw_candidates", 0), "observations": observations_total},
+            "aggregation": {"resource_groups": len(all_groups)},
+            "judgment": {"groups_judged": len(all_groups), "meaningful": summary["meaningful_groups"], "coincidental": summary["coincidental_groups"], "uncertain": summary["uncertain_groups"]},
+            "graph": {"nodes": graph_summary["nodes"] if graph_summary else 0, "edges": graph_summary["edges"] if graph_summary else 0},
+        }
+        # Only include if we have at least some data; for empty reports keep None to avoid breaking old tests that check exact keys
+        # But we want to ensure new fields are present even for fallback, so we keep them
+        # For backward compat, if no accounting was provided, we still want to provide analysis for new tests
+        # So we keep analysis
+
+    return GroupedReportData(findings=findings, summary=summary, graph_summary=graph_summary, application=application, inputs=inputs, analysis=analysis)

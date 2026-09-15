@@ -2,7 +2,7 @@
 
 > Why BlindSpot looks the way it does. Append-only log — never delete, only supercede with new entry.
 
-**Last Updated:** 2026-09-06
+**Last Updated:** 2026-09-07
 
 ---
 
@@ -220,8 +220,6 @@
 
 ---
 
-### Template for Next Entry
-
 ## D-030: Prompt 2 — Resource-Centric Aggregation, Grouped LLM Judgment, Graph/Report Alignment
 
 - **Date:** 2026-09-06
@@ -229,6 +227,79 @@
 - **Context:** Cal.com validation exposed `6 candidate observations →6 LLM judgments →6 meaningful findings` but `3 services →1 normalized identity →1 resource node +3 edges` — Graph correctly deduped but model/report still pairwise. Need resource-centric aggregation before LLM so user sees one coupling finding per shared resource, not six pairwise duplicates. Must preserve observations as evidence inside group, distinguish `Observation` vs `Resource Group` vs `Coupling Finding`, not merely hide duplicates in report.
 - **Consequence:** `aggregation.py` 200 LOC + `coupling.py` 150 LOC + `judge.py` +150 LOC (grouped) + `graph.py` +120 LOC + `report.py` +190 LOC (grouped) + `cli.py` grouped pipeline + `tests/test_grouping.py` 14 tests (multiple vars same identity→one group, 3 services same resource→one group, different vars same identity grouped, same var different identity not grouped, unknown not over-merged, named volume group, graph counts from grouped, report counts distinguish, cache deterministic, empty, near-miss, deterministic ordering, config evidence grouped by service, prompt contains group info); fixtures `shared_env` 2 groups, `shared_volume` 1 group, `near_miss` 0, Cal.com 6 obs→1 group (3 svcs, DATABASE_URL/DIRECT_URL) →1 finding →1 node+3 edges (vs before 6 findings/1 node), `report.json` summary now `services_analyzed/resource_groups/observations/meaningful_groups`, `report.md` human-readable per spec §13-19; old pairwise `DependencyModel`/`build_graph`/`build_report` retained for tests; 92 tests pass.
 - **Supercedes:** D-028 pairwise finding model for user-facing analysis (kept internally for tests)
+
+## D-031: Interactive CLI Menu — Absolute C:\ Path + Thinking Validation
+
+- **Date:** 2026-09-07
+- **Decision:** Replace one-command README section with polished interactive menu as default: `src/blindspot/cli.py` shows banner `BlindSpot — Implicit Cross-Service Coupling Detector` and prompts for (1) absolute application path from `C:\` drive (quote-stripped, `is_absolute` + `drive C:` + `exists` + `is_dir` + `find_compose` warning with confirm, re-prompts with `[error]` on empty/relative/missing) and (2) AI thinking `low/medium/high` only (empty→`low`, `none` rejected, case-insensitive, `Ctrl+C` clean exit). On success prints summary `Application/Thinking/Output` and runs `run_one_repo` with `auto` provider. Keep advanced batch flags (`repos` absolute-path validated, `--thinking` limited to `low/medium/high`, `--interactive` to force menu, `--list-fixtures`) for scripting/tests. One-prompt section removed from `README.md:99` and replaced with `Quick Start — Interactive Menu` + `Advanced — flags` subsection.
+- **Context:** User requested way simpler run: no memorizing `set PYTHONPATH=src && python -m blindspot.cli "C:\...\" --out ... --thinking low`; just run script and answer questions. Path must be absolute from `C:\` root (Windows) and thinking only `low/medium/high`. CLI must be polished/neat with proper error/edge-case handling.
+- **Consequence:** `cli.py` 237→~360 LOC (`_print_banner`, `_strip_quotes`, `_is_absolute_windows_path`, `_prompt_absolute_path`, `_prompt_thinking`, `_run_interactive`, `main` detects `len(sys.argv)==1` → interactive); `README.md` installation unchanged, `Quick Start` now shows interactive session example + `Advanced` collapsed; `STATE.md`/`HANDOFF.md` updated; 92 tests still pass; batch `python -m blindspot.cli "C:\path" --thinking low` still works but now validates absolute `C:\` path.
+
+## D-032: Repository Sweep — Simple Errors & Future Edge Cases
+
+- **Date:** 2026-09-07
+- **Decision:** Audit all 10 source modules for simple errors / future edge cases and apply low-risk defensive fixes without changing pipeline semantics.
+- **Context:** Pre-Tier 2 sweep requested to catch cheap bugs before they compound. Systematic read of `parser.py:1`, `discovery.py:1`, `resolution.py:1`, `filtering.py:1`, `aggregation.py:1`, `coupling.py:1`, `judge.py:1`, `model.py:1`, `graph.py:1`, `report.py:1`, `cli.py:1`, `__init__.py:1`.
+- **Findings & Fixes (done):**
+  - `__init__.py:1` `__all__` listed `placeholder_future_judge` but import missing → added import so `from blindspot import placeholder_future_judge` works.
+  - `cli.py:224` `out_dir = (out_root/repo_name) if is_dir else parent` + `if len(sys.argv)>2` hack fragile, plus `Path("C:\\").name == ""` → empty out dir. Fixed to deterministic `out_root.suffix` check and `repo_name or "repo"` fallback `cli.py:225`.
+  - `cli.py:250` no API-key warning → silent failsafe `uncertain 0.5` confusing. Added visible `[warning]` when `auto` finds no `OPENROUTER_API_KEY`/`GEMINI_API_KEY`.
+  - `parser.py:75` `_load_yaml` no `YAMLError`/`UnicodeDecodeError` context. Wrapped with `ValueError(... not valid YAML/UTF-8)` `parser.py:79`.
+  - `parser.py:356` `_load_service_env_files` silently dropped missing `required:true` env_file. Now logs `logging.warning` for both required and optional missing `parser.py:385`.
+  - `resolution.py:335` dead variables `progressed`/`next_value` left from refactor. Removed `resolution.py:339`.
+  - `judge.py:632` `_parse_or_failsafe` regex `\{[^{}]*"verdict"[^{}]*\}` fails when `reason` contains braces. Added balanced-brace extractor as primary, regex fallback `judge.py:646`; same for grouped `judge.py:976` `OpenRouter` path — prevents malformed-JSON failsafe on nested reason.
+  - `judge.py:294` `_save_cache` direct `write_text` risks corruption on crash/concurrent runs. Now atomic via `tempfile.mkstemp` + `Path.replace` with fallback `judge.py:305`.
+  - `report.py:448` `GroupedReportData.to_markdown` returned early without boundary when `findings` empty, inconsistent with non-empty. Added boundary `report.py:450`.
+  - `aggregation.py:190` capped `obs_list` at 20 silently. Now logs `warning` with group key and original count `aggregation.py:192`.
+  - `cli.py:195` `find_compose` called `rglob` 4 times per repo. Optimized to top-level check first then single `rglob` scan sorted shallowest-first `cli.py:198`.
+  - `cli.py:246` `parse_compose_file` exception bubbled as traceback in interactive mode. Wrapped in `try/except` → returns error `report.json/md/graph.json` empty graph and `result["error"]` `cli.py:246`.
+- **Findings & Not Fixed (documented for future, low risk / Tier 2 relevant):**
+  - `resolution.py:170` `mongodb://host1,host2/db` multi-host cluster only captures first host via `parsed.hostname`; full cluster identity would need comma-split handling.
+  - `filtering.py:40` dual `_decide` vs `_decide_with_project` duplication — keep for backward compat but risk drift; future should unify.
+  - `judge.py:THINKING_BUDGETS` still contains `"none":0` while CLI only allows `low/medium/high`; kept for backward API but unused in CLI.
+  - `cli.py:57` `_is_absolute_windows_path` on non-Windows falls back to `is_absolute` only — cross-platform tests pass but Windows `C:` semantic not enforced on Linux CI.
+  - `parser.py:303` Windows volume `C:\host\path:/container` colon-splitting edge — not in Tier 1 fixture scope.
+- **Consequence:** 12 low-risk fixes applied, 5 documented non-fixes. `92 tests` still pass; manual edge-case repro (relative path, missing key, `C:\` root, required env_file warning, unbalanced JSON reason) verified. Pipeline semantics unchanged; Tier 2 can start from clean baseline.
+
+## D-033: General README + Deterministic Fallback + Simple Start (`run.py`)
+
+- **Date:** 2026-09-07
+- **Decision:** Make instructions general-purpose (no `C:\Users\Lekha\...` paths) and split `README.md` into **First Time Setup (one-time: `venv` + `pip install`)** vs **Running (every time: `python run.py`)**; remove explicit `echo OPENROUTER_API_KEY`/`GEMINI_API_KEY` commands — instead, if no API key is present in `.env`/`environ`, prompt **every run** with `Would you like to enter an API key? [Y/n]`: Y → paste `sk-or-...`/`AIza...` (detected, saved to `.env` + `os.environ`), n → deterministic-only mode (no LLM, `0` calls, `uncertain 0.0` via `_deterministic_pairs`, banner `Deterministic-Only Mode` in `report.md`, only structural JSONs, re-prompted next run). Add simple launchers `run.py` (`sys.path` insert `src`, calls `blindspot.cli:main`), `run.bat` (prefers `.venv\Scripts\python`), `run.sh` (prefers `.venv/bin/python`) so daily command is `python run.py` not `set PYTHONPATH=src && python -m blindspot.cli ...`. Update `src/blindspot/cli.py:30` (`_has_api_key`, `_prompt_for_api_key`, `_deterministic_pairs`, `deterministic_only` branch in `run_one_repo`, `run.log` `deterministic_only` flag, `_run_interactive` deterministic summary).
+- **Context:** Previous README pointed to Lekha's absolute paths and required manual `echo` of API keys — not general. Pip/venv were mixed into everyday run instructions. Per request, service start must be a simple script, and API-key absence must be handled via Yes/No prompt with deterministic fallback (JSONs only, no AI reasoning) and re-prompt every time. `pip install`/`venv` must live only in First Time Setup.
+- **Consequence:** `README.md` now general (`C:\path\to\YourApp`, `<path\to\Blindspot>`, `python run.py`/`run.bat`, First Time Setup vs Running split); `cli.py` ~440→~520 LOC with new helpers; `run.py`/`run.bat`/`run.sh` added; `STATE.md`/`HANDOFF.md` updated; 92 tests still pass; `python run.py` is now the primary documented entry point, `python -m blindspot.cli` remains as alternative.
+- **Supercedes:** Prior README `Installation & Keys` + `Quick Start` user-specific sections
+
+## D-034: Windows `input()` Fix — `run.py` `os.execv` → `subprocess.call`
+
+- **Date:** 2026-09-07
+- **Decision:** Replace `run.py:28` `os.execv(venv_python, ...)` (which on Windows does not preserve console handles for `input()` → typed `C:\...\docker` went to `cmd` as `'C:\...\docker' is not recognized as an internal or external command`) with `subprocess.call([venv_python, run.py] + argv)` + `SystemExit` preserving console; add graceful `ModuleNotFoundError: yaml` hint (use `run.bat` / activate venv) and keep `src` path insertion. On Unix, `subprocess.call` is also safe.
+- **Context:** User ran `python run.py` (system `python` → auto-relaunch to `.venv\Scripts\python.exe` via `os.execv`), saw banner, typed `C:\Users\Lekha\Projects\docker` at `Enter absolute application path` prompt, but got cmd error instead of CLI validation — classic Windows `execv` console inheritance bug. Non-interactive `--help` still worked (no `input()` needed), but interactive `input()` failed.
+- **Consequence:** `run.py` now correctly preserves console for `input()` on Windows; `python run.py` and `run.bat` both work interactively. Verified via `python run.py --help` (system python) and piped `C:\path\to\YourApp` + `low` flows (deterministic and with real key → 2 meaningful). `92 tests` still pass; docs updated to recommend `run.bat` on Windows as most robust.
+
+## D-035: Fix `.env file not found` Spam (4×) — Dedup + Debug Level
+
+- **Date:** 2026-09-07
+- **Decision:** Change `src/blindspot/parser.py:362` `_load_service_env_files` to deduplicate missing `env_file` warnings via module-level `_warned_env_files: set[Path]` and lower generic `env_file: .env` missing from `WARNING` to `DEBUG` (so `C:\...\docker\docker-compose.yaml` with 5 services each `env_file: .env` no longer prints 4× `env_file not found: C:/.../.env` before output). Keep `required: true` missing as `WARNING` but deduped to once. Generic string-path missing now `debug` (invisible at default WARNING level).
+- **Context:** User ran `python run.py` → `C:\Users\Lekha\Projects\docker` (which has `docker-compose.yaml` with services `database, calcom, calcom-api, studio` each `env_file: .env` and no `.env` present) and saw `.env file not found` 4 times before output. Each service triggered `logging.warning` for the same missing file, spamming the interactive banner.
+- **Consequence:** `parser.py:355` now has `_warned_env_files` + `if ef_path not in _warned...` + `debug` for generic, `warning` (deduped) for `required:true`. Verified with `docker-compose.yaml` (5 services, same `.env`) → 0 visible warnings at `WARNING` level, 1 at `DEBUG`; `92 tests` still pass; `python run.py` on `C:\...\docker` now shows clean banner → `6 candidates → 1 group → 1 meaningful` with `0` env_file warnings.
+- **Supercedes:** D-032 warning-spam behavior (4×)
+
+## D-036: Versioned History Instead of Overwrites (`report_1.json` etc.)
+
+- **Date:** 2026-09-07
+- **Decision:** Replace overwriting `out/<app>/report.json` (and `.md`/`.log.json`/`graph.json`) on re-analysis with versioned history via `src/blindspot/cli.py:340` `_versioned_path(base)` — if `report.json` exists, next is `report_1.json` (then `_2`, `_3`...), `report.md` → `report_1.md`, `graph.json` → `graph_1.json`, `report.log.json` → `report_1.log.json` (special handling for double suffix). First run stays `report.json`; re-analyzing same `C:\path\to\YourApp` keeps previous files and writes new versioned set, not overwriting. Handles both error-path and success-path writes (`cli.py:389`/`403`/`487`).
+- **Context:** User asked what happens on re-analysis with same folder name — previously it overwrote (`write_text` truncates). Requested simple file-name extension history, default `report.json` then `_1`, `_2` etc., instead of lossy overwrites.
+- **Consequence:** `cli.py` ~620 LOC with `_versioned_path`; `run_one_repo` now returns `report.json`/`report.md`/`graph.json`/`report.log.json` versioned paths and prints `Out: .../report_1.json + ... (history kept)`; `README.md` Outputs section updated to show versioned history; verified with temp `out` (3 runs → `report.json`, `report_1.json`, `report_2.json` etc. all preserved); `92 tests` still pass.
+- **Supercedes:** Overwrite behavior in `D-033`/`D-034`
+
+## D-037: Input Transparency & Analysis Accounting (Prompt)
+
+- **Date:** 2026-09-07
+- **Decision:** Make pipeline observability first-class without changing detection semantics (`depends_on` still not Tier-1 evidence). Added `src/blindspot/parser.py:62` `Project.count_named_volumes()` (distinct `type=="named"`), `src/blindspot/cli.py:340` helpers `_discover_compose_sources`/`_relative_to_root` and full accounting dict (`application_root`, `sources.discovered/used`, `parsed.services/named_volumes`, `discovery.raw_candidates/observations/filtered_out`, `aggregation.resource_groups`, `judgment.groups_judged/llm_calls/cache_hits/meaningful`, `graph.nodes/edges`) computed at each stage in `run_one_repo` and passed to `src/blindspot/report.py:641` `build_grouped_report(..., accounting)` which now populates `GroupedReportData.application`/`inputs`/`analysis` and renders `report.json` top-level `application`/`inputs`/`analysis` + `summary` (compat) and `report.md` `Analysis input`/`Pipeline summary` with separate `Services discovered` vs `Candidates generated` and explanations for legitimate zero-result runs (`No Tier 1 candidates generated` vs `No services discovered`, `Candidates filtered`, `6 obs → 1 group`). CLI interactive/batch now same accounting (prompt §10).
+- **Context:** `celery-docker-example` produced `Services analyzed : 0 candidates scanned` (ambiguous `0` could mean no services vs no candidates). Prompt requires distinguishing `No services discovered` from `5 services, 0 candidates → no supported Tier-1 evidence`. Must not change filtering/aggregation/graph/LLM behavior.
+- **Consequence:** `report.json` now self-explanatory (example `celery` → `application.root`, `inputs.sources_used: ["docker-compose.yml"]`, `analysis.parsed.services:5, named_volumes:1, discovery.raw_candidates:0, observations:0, judgment.groups_judged:0`), `report.md` now `Analysis input` + `Pipeline summary` + `Result` explanations, CLI now `Input / Parsed / Analysis / Graph` sections with `llm_calls`/`cache_hits` when available. `98 tests` (92 + 6 `test_accounting.py` Cases A-F) pass; `celery` 5→0 now diagnosable, `docker` 5→6→6→1→1 still consistent; no detection semantics changed.
+
+### Template for Next Entry
 
 ```md
 ## D-0XX: Title

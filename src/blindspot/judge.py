@@ -301,7 +301,23 @@ def _save_cache(cache_path: Union[Path, str, None], cache: Dict[str, Any]) -> No
         "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "entries": cache,
     }
-    p.write_text(json.dumps(wrapped, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+    # Atomic write via temp file to avoid corruption on concurrent/crash
+    import tempfile
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(p.parent) if p.parent.exists() else None, suffix=".tmp")
+    try:
+        with open(tmp_fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(wrapped, indent=2, sort_keys=True, ensure_ascii=False))
+        Path(tmp_path).replace(p)
+    except Exception:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        # Fallback to direct write
+        try:
+            p.write_text(json.dumps(wrapped, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -645,15 +661,40 @@ class OpenRouterJudgeClient:
                 candidate_text = raw
                 # If not pure JSON, search for JSON substring with verdict
                 if not candidate_text.lstrip().startswith("{"):
-                    # Find all {...} blocks and pick last that contains verdict
-                    matches = re.findall(r"\{[^{}]*\"verdict\"[^{}]*\}", candidate_text, re.DOTALL)
-                    if matches:
-                        candidate_text = matches[-1]
+                    # First try: find all balanced JSON objects containing "verdict" (handles nested braces in reason)
+                    # Fallback to simple non-greedy extraction if balanced parsing fails.
+                    def _extract_balanced(s: str) -> Optional[str]:
+                        last: Optional[str] = None
+                        i = 0
+                        while i < len(s):
+                            if s[i] == "{":
+                                depth = 0
+                                start = i
+                                for j in range(i, len(s)):
+                                    if s[j] == "{":
+                                        depth += 1
+                                    elif s[j] == "}":
+                                        depth -= 1
+                                        if depth == 0:
+                                            block = s[start:j+1]
+                                            if '"verdict"' in block:
+                                                last = block
+                                            i = j
+                                            break
+                                # end for
+                            i += 1
+                        return last
+                    balanced = _extract_balanced(candidate_text)
+                    if balanced:
+                        candidate_text = balanced
                     else:
-                        # Broader: find outermost JSON object greedily
-                        m2 = re.search(r"\{.*\"verdict\".*\}", candidate_text, re.DOTALL)
-                        if m2:
-                            candidate_text = m2.group(0)
+                        matches = re.findall(r"\{[^{}]*\"verdict\"[^{}]*\}", candidate_text, re.DOTALL)
+                        if matches:
+                            candidate_text = matches[-1]
+                        else:
+                            m2 = re.search(r"\{.*\"verdict\".*\}", candidate_text, re.DOTALL)
+                            if m2:
+                                candidate_text = m2.group(0)
                 data = json.loads(candidate_text)
                 if isinstance(data, dict) and "verdict" not in data:
                     for v in data.values():
@@ -948,9 +989,34 @@ def judge_grouped_package(
                                 if m:
                                     raw = m.group(1).strip()
                             if not raw.lstrip().startswith("{"):
-                                ms = _re.findall(r"\{[^{}]*\"verdict\"[^{}]*\}", raw, _re.DOTALL)
-                                if ms:
-                                    raw = ms[-1]
+                                # balanced extraction handles reason containing braces
+                                def _balanced(s: str):
+                                    last = None
+                                    i = 0
+                                    while i < len(s):
+                                        if s[i] == "{":
+                                            depth = 0
+                                            start = i
+                                            for j in range(i, len(s)):
+                                                if s[j] == "{":
+                                                    depth += 1
+                                                elif s[j] == "}":
+                                                    depth -= 1
+                                                    if depth == 0:
+                                                        block = s[start:j+1]
+                                                        if '"verdict"' in block:
+                                                            last = block
+                                                        i = j
+                                                        break
+                                        i += 1
+                                    return last
+                                bal = _balanced(raw)
+                                if bal:
+                                    raw = bal
+                                else:
+                                    ms = _re.findall(r"\{[^{}]*\"verdict\"[^{}]*\}", raw, _re.DOTALL)
+                                    if ms:
+                                        raw = ms[-1]
                             data = json.loads(raw)
                             if isinstance(data, dict) and "verdict" not in data:
                                 for v in data.values():

@@ -67,14 +67,29 @@ class Project:
             "services": {name: svc.to_dict() for name, svc in self.services.items()}
         }
 
+    def count_named_volumes(self) -> int:
+        """Distinct named volumes across all services (Tier 1 scope)."""
+        seen: set[str] = set()
+        for svc in self.services.values():
+            for vol in svc.volumes:
+                if vol.type == "named" and vol.source:
+                    seen.add(vol.source)
+        return len(seen)
+
 
 # ---------------------------------------------------------------------------
 # 1. Reading YAML
 # ---------------------------------------------------------------------------
 
 def _load_yaml(compose_path: Path) -> Dict[str, Any]:
-    text = compose_path.read_text(encoding="utf-8")
-    data = yaml.safe_load(text)
+    try:
+        text = compose_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"Compose file {compose_path} is not valid UTF-8: {e}") from e
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ValueError(f"Compose file {compose_path} is not valid YAML: {e}") from e
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -353,6 +368,8 @@ def _resolve_env_file_path(raw_path: str | Path, base: Path) -> Path:
     return p
 
 
+_warned_env_files: set[Path] = set()
+
 def _load_service_env_files(
     raw_env_file: Any,
     compose_dir: Path,
@@ -362,6 +379,8 @@ def _load_service_env_files(
     Files are processed in order; later files override earlier ones.
     Uses ``load_env_file`` so ``VAR=`` yields ``""`` (preserved) and malformed
     lines (None) are dropped.
+    Missing env_file is debug-logged once per unique path (not per service) to
+    avoid spamming when 4 services all reference the same missing file.
     """
     if raw_env_file is None:
         return {}
@@ -384,14 +403,31 @@ def _load_service_env_files(
                 continue
             required = bool(entry.get("required", True))
             ef_path = _resolve_env_file_path(raw_path, compose_dir)
-            if not ef_path.exists() and not required:
-                continue
+            if not ef_path.exists():
+                if not required:
+                    continue
+                else:
+                    import logging
+                    if ef_path not in _warned_env_files:
+                        _warned_env_files.add(ef_path)
+                        logging.getLogger("blindspot.parser").warning(
+                            "env_file required but not found: %s (resolved to %s)", raw_path, ef_path
+                        )
+                    continue
         elif isinstance(entry, (str, Path)):
             ef_path = _resolve_env_file_path(entry, compose_dir)
         else:
             # Coerce unexpected types to string path
             ef_path = _resolve_env_file_path(str(entry), compose_dir)
 
+        if not ef_path.exists():
+            import logging
+            if ef_path not in _warned_env_files:
+                _warned_env_files.add(ef_path)
+                # Generic env_file string is often optional (.env) — debug to avoid spamming
+                logging.getLogger("blindspot.parser").debug(
+                    "env_file not found: %s", ef_path
+                )
         loaded = load_env_file(ef_path)
         # Later files override earlier (Docker spec)
         merged.update(loaded)

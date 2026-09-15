@@ -1,19 +1,19 @@
 # HANDOFF.md — What the Next Agent Needs to Know
 
 > Read this first when you start a session. It tells you where we left off and exactly what to do next.
-**Last Updated:** 2026-09-06 (Prompt 2 Done)
-**Current Phase:** **Tier 1 Complete + Redesign + Resource-Centric Aggregation DONE** (parser + discovery + **bounded resolution** + **aggregation by normalized_identity** + **Grouped LLM 1/group** + **CouplingModel** + **Graph from groups** + **Grouped Report** + **CLI minimal**) — **Tier 2 Kubernetes NEXT (whole point)**
-**Current Branch:** `main` — working tree: Prompt 2 done, 92 tests, Tier 2 next
+**Last Updated:** 2026-09-07 (Input Transparency & Accounting Done)
+**Current Phase:** **Tier 1 Complete + Redesign + Resource-Centric Aggregation + Interactive CLI + Edge-Case Sweep + General Setup + Windows Input Fix + Fix .env Spam + Versioned History + Input Transparency & Accounting DONE** (parser + discovery + **bounded resolution** + **aggregation by normalized_identity** + **Grouped LLM 1/group** + **CouplingModel** + **Graph from groups** + **Grouped Report + Accounting** + **Interactive CLI: separate Services/Candidates + versioned history**) — **Tier 2 Kubernetes NEXT (whole point)**
+**Current Branch:** `main` — working tree: accounting done, 98 tests, Tier 2 next
 
 ---
 
 ## 1. TL;DR for Next Agent
 
 1. Read `AGENTS.md` (§3 bounded evidence with `internal/external_confirmed/partial/unresolved`, §3b aggregation by `normalized_identity`, §4 one call/group, §5 CouplingModel, §6 Graph from groups) + `PROJECT_PLAN.md` + `STATE.md` §2, then this file.
-2. **Stages 1–7 + Redesign + Prompt 2 DONE:** `parser.py` 540 LOC, `discovery.py` 132 LOC, `resolution.py` 607 LOC, `aggregation.py` 200 LOC (`GroupedEvidencePackage`, `aggregate_evidence_packages`), `coupling.py` 150 LOC (`CouplingGroup/Model`), `filtering.py` 530 LOC, `judge.py` 900 LOC (`build_grouped_judge_prompt`, `judge_grouped_packages` 0+1/group), `graph.py` 350 LOC (`build_graph_from_groups`), `report.py` 400 LOC (`GroupedReportData`), `cli.py` grouped. **92 tests pass** (32+8+8+13+17+14). Cal.com 6 obs →1 group (3 svcs) →1 finding →1 node+3 edges.
-3. **Full pipeline now (grouped):** `parse_compose_file` → `discover_candidates` → `build_evidence_packages` → `aggregate_evidence_packages` (by `normalized_identity`) → `judge_grouped_packages` (0+1/group, cached on grouped key) → `CouplingModel.from_grouped_judgments` → `build_graph_from_groups` → `build_grouped_report` → `report.json+report.md+graph.json` (model hidden). CLI wraps for one/many repos (minimal `Provider/Thinking/Out`).
-4. Keep updated: `STATE.md`, `DECISIONS.md` (D-030 grouped), `HANDOFF.md`.
-5. `.env` gitignored, `!fixtures/**/.env` allowed, `cache.json` ignored. **Windows: use absolute quoted `set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low`** (or `.venv\Scripts\python` if `python` is system python → `No module named 'yaml'`).
+2. **Stages 1–7 + Redesign + Prompt 2 + Interactive CLI + Edge-Case Sweep + General Setup + Windows Input Fix + Fix .env Spam + Versioned History + Accounting DONE:** `parser.py` 540 LOC (`count_named_volumes()`), `discovery.py` 132 LOC, `resolution.py` 607 LOC, `aggregation.py` 200 LOC, `coupling.py` 150 LOC, `filtering.py` 530 LOC, `judge.py` 1050 LOC, `graph.py` 350 LOC, `report.py` 550 LOC (`GroupedReportData` now `application`/`inputs`/`analysis` + `Analysis input`/`Pipeline summary` + zero-result explanations + separate `Services discovered` vs `Candidates generated`), `cli.py` ~750 LOC (`_discover_compose_sources`/`_relative_to_root` + full pipeline accounting `raw_candidates`/`observations`/`filtered_out`/`llm_calls`/`cache_hits` + separate CLI sections) . **98 tests pass** (32+8+8+13+17+14+6 accounting). `celery` 5 services → 0 candidates now diagnosable as `5 services, 0 candidates, 0 obs` not `0 services`, `docker` `6→6→1→1` still consistent.
+3. **Full pipeline now (grouped + accounting):** `parse_compose_file` (with `Project.count_named_volumes()`) → `discover_candidates` (`raw_candidates`) → `build_evidence_packages` (`observations`/`filtered_out`) → `aggregate_evidence_packages` (`resource_groups`) → **API-key check (prompt Yes/No every run if missing; No → deterministic-only)** → `CouplingModel.from_grouped_judgments` → `build_graph_from_groups` → `build_grouped_report(accounting)` → `report.json` now `{application:{root}, inputs:{sources_used}, analysis:{parsed:{services, named_volumes}, discovery:{raw_candidates, observations}, aggregation:{resource_groups}, judgment:{groups_judged, llm_calls, cache_hits, meaningful}, graph:{nodes,edges}}}` + `summary` (compat) + `findings` + `report.md` now `Analysis input`/`Pipeline summary` with separate `Services discovered` vs `Candidates generated` and explanations for `0 candidates` vs `0 services` vs `filtered` vs `6→1` grouping. Simple start: `python run.py`; advanced: `python run.py "C:\path\to\repo" --thinking low`.
+4. Keep updated: `STATE.md`, `DECISIONS.md` (D-030 grouped, D-031 interactive CLI, D-032 sweep, D-033 general+deterministic, D-034 win-input-fix), `HANDOFF.md`.
+5. `.env` gitignored, `!fixtures/**/.env` allowed, `cache.json` ignored. **Any user — not just Lekha:** first-time `python -m venv .venv && pip install -r requirements.txt` (see README **First Time Setup**), then everyday `python run.py` or `run.bat` (prompts for `C:\path\to\YourApp` + `low/medium/high` + API key Yes/No). Advanced `python run.py "C:\path\to\repo" --thinking low` still works.
 
 ---
 
@@ -27,8 +27,9 @@
 - **Model:** `model.py:27` `Dependency{_model(hidden)}` + `model.py:218` `from_list` rehydrates new fields.
 - **Graph (REDESIGN):** `graph.py:76` `_resource_key(resource, resource_type, value, normalized_identity=None)` prefers `normalized_identity` (`resource:env_var:postgresql|db|5432|calcom`) else legacy, `build_graph:102` includes `normalized_identity/resource_protocol/resolution_status` in node `data`, dedup strips credentials.
 - **Report (REDESIGN):** `report.py:105` `to_markdown` branches `INTERNAL/EXTERNAL_CONFIRMED/PARTIAL/UNRESOLVED` + `Normalized:` + `Resolution chain` (bounded 5) + `Identity strength` + `Unresolved vars`.
-- **CLI:** `cli.py:1` one-command, `find_compose`, `--thinking low` typical for Windows example `set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low` (absolute path, quoted; use `.venv\Scripts\python` if `python` is system python).
-- Tests: 78 passed. `shared_env` now `unresolved config` 0.75 honest (not `external` 0.90), `calcom` `DATABASE_URL` chain `internal exact postgresql|database||calcom`.
+- **CLI (INTERACTIVE + API-KEY + DETERMINISTIC):** `cli.py:1` interactive: `_print_banner`, `_prompt_absolute_path` (absolute `C:\` check, exists/is_dir, quote stripping, compose warning + confirm, `Ctrl+C` clean), `_prompt_thinking` (only `low/medium/high`, default `low`), `_has_api_key`/`_prompt_for_api_key` (prompt Yes/No **every run** if no `OPENROUTER_API_KEY`/`GEMINI_API_KEY`; Y→ paste `sk-or-...`/`AIza...` saved to `.env`, n→ `_deterministic_pairs` `uncertain 0.0` without LLM, deterministic banner, JSONs only, re-prompted next run), `_run_interactive` → `run_one_repo` (`deterministic_only` branch skips `judge_grouped_packages`, `run.py` launcher). Advanced batch still supported: `cli.py "C:\path\to\repo" --thinking low --provider auto` with absolute-path validation.
+- **Windows input fix (D-034):** `run.py` `os.execv` broke `input()` on Windows (console handle not inherited → typed `C:\...\docker` went to `cmd` → `'... is not recognized as internal or external command'`). Fixed to `subprocess.call` + `SystemExit` preserving console; added graceful `ModuleNotFoundError: yaml` hint (use `run.bat` / activate venv). `run.bat` is now the recommended Windows launcher.
+- Tests: 92 passed. `shared_env` now `unresolved config` 0.75 honest (not `external` 0.90), `calcom` `DATABASE_URL` chain `internal exact postgresql|database||calcom`.
 
 ---
 
@@ -38,29 +39,39 @@
 * Parse Kubernetes YAML → workloads → shared ConfigMap/Secret/shared-volume candidates → same `Filtering (with resolution) → Judge → Model → Graph → Report` pipeline `AGENTS.md:385`.
 * Do not create a separate downstream architecture for K8s findings.
 
-**How to test any repo(s) — Windows cmd.exe vs bash:**
+**How to test any repo — general (any computer, not just Lekha's):**
 
 ```cmd
-REM Windows — from C:\Users\Lekha\Projects\Blindspot — absolute path, quoted, venv python
-.venv\Scripts\python -m pip install -r requirements.txt
-echo OPENROUTER_API_KEY=sk-or-v1-...>> .env
-REM if `python` is system python and you get ModuleNotFoundError: No module named 'yaml', replace `python` with `.venv\Scripts\python`
-set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low
-set PYTHONPATH=src && python -m blindspot.cli "C:\path\to\repo1" "C:\path\to\repo2" --out out --provider openrouter --cache cache.json
-type out\calcom\report.md
+REM First time only — from <path\to\Blindspot>
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+REM Everyday — simple start (no PYTHONPATH, no pip)
+python run.py
+REM -> BlindSpot banner
+REM -> Enter absolute application path (e.g. C:\path\to\YourApp): C:\path\to\YourApp
+REM -> Select AI thinking level [low / medium / high] (default: low): low
+REM -> (if no API key) Would you like to enter an API key? [Y/n]: Y
+REM -> Paste your API key (OpenRouter sk-or-... or Gemini AIza...): sk-or-v1-...
+REM -> (if n) deterministic-only mode — JSONs only, no AI reasoning
+
+type out\YourApp\report.md
+REM Advanced — bypass menu (still prompts for API key if missing):
+python run.py "C:\path\to\YourApp" --thinking low
 ```
 
 ```bash
-# Git Bash / Linux
+# macOS / Linux / Git Bash — first time
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-echo OPENROUTER_API_KEY=sk-or-v1-... >> .env
-PYTHONPATH=src .venv/Scripts/python -m blindspot.cli /path/to/repo --out out --thinking medium
-PYTHONPATH=src .venv/Scripts/python -m blindspot.cli /tmp/real --out out --provider openrouter --cache cache.json
-cat out/repo/report.md
-# Summary table printed: cand -> pkgs -> deps (meaningful) -> nodes/edges
+# everyday
+python run.py
+# or: bash run.sh
+cat out/YourApp/report.md
 ```
 
-Tier 1 validates via CLI above; Tier 2 extends candidate discovery to K8s manifests without changing downstream.
+Tier 1 validates via `python run.py` above; Tier 2 extends candidate discovery to K8s manifests without changing downstream.
 
 ---
 
@@ -68,13 +79,16 @@ Tier 1 validates via CLI above; Tier 2 extends candidate discovery to K8s manife
 
 - **Discovery ≠ Judgment** — LLM only judges filtered + bounded packages (one per package).
 - **Shared names ≠ dependencies** — `PORT` filtered before LLM. Different raw that normalize same (`user1:pass@db` vs `user2:pass@db` → `postgresql|db|5432|calcom`) are *kept* (project-aware).
-- **Windows venv trap** — `python -m blindspot.cli` fails with `ModuleNotFoundError: No module named 'yaml'` if `python` is system python. Use `set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low` when venv is activated, or `set PYTHONPATH=src && .venv\Scripts\python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low` explicitly. `PyYAML` lives in `.venv`.
+- **Windows venv trap** — `python -m blindspot.cli` fails with `ModuleNotFoundError: No module named 'yaml'` if `python` is system python. Use `python run.py` (auto-uses `.venv`), or if using the module directly: `set PYTHONPATH=src && python -m blindspot.cli "C:\path\to\YourApp" --thinking low` with venv activated, or `.venv\Scripts\python -m blindspot.cli "C:\path\to\YourApp"` explicitly. `PyYAML` lives in `.venv`.
 - **Evidence matters + bounded + distinct states** — Never silently `external`. States: `internal` (Compose service matched, host-like gated), `external_confirmed` (supported URI fully resolved), `partial` (supported scheme but unresolved vars), `unresolved` (plain `shared-db`, cycle, depth, unknown `abc://`). Provide `normalized_identity` only for exact/partial, credentials stripped, deterministic.
 - **Chain bounded** — `MAX_RESOLUTION_DEPTH=10`, cycle detection via `seen_values`/`seen_vars`, deterministic lookup from `Compose/.env/env_file` (sorted services, `service_a/b` first), `resolution_chain` max 5 rendered.
 - **Identity strength** — `exact` (proven physical `host+db`), `config` (same template `shared-db` or `postgresql://${HOST}/db` unresolved), `unknown`. Judge prompt guides confidence accordingly.
 - **Value-structure, not name dictionary** — No `DATABASE_URL` list. Parsers on `://` scheme (`postgresql/postgres/mysql/mongodb/mongodb+srv/redis/rediss`). Unknown `abc://` stays `resource_protocol=None`.
 - **Dedup by normalized_identity** — `graph.py:76` `resource:env_var:postgresql|db|5432|calcom` dedup strips credentials; fallback to `resource_type:resource[=value]`. Preserves `confidence`, hides `model`, bipartite only, deterministic.
-- **One LLM call per survivor** — `0 for obvious noise + 1 per interesting candidate`; `uncertain` allowed; `cache.json` key = `sha256(cache_key_dict with normalized_identity/resolution_status/final_value)`.
+- **Interactive CLI contract** — `python run.py` (recommended) or `python -m blindspot.cli` with no args prompts for absolute `C:\path\to\YourApp` (quote-stripped, `is_absolute` + drive `C:` + exists + is_dir + `C:\` root→`repo` fallback + compose warning) and `low/medium/high` only (empty→`low`, `none` rejected), **plus API-key Yes/No every run if no key** (`Y`→ paste `sk-or-...`/`AIza...` saved to `.env`, `n`→ deterministic-only JSONs without AI reasoning, re-prompted next run). Batch `python run.py "C:\path" --thinking low` also validates absolute `C:\` path. Both handle `Ctrl+C` cleanly. `out_dir` now deterministic `out_root.suffix` check, no `sys.argv` hack.
+- **General purpose README** — no `C:\Users\Lekha\...` paths; split into **First Time Setup (one-time: `venv` + `pip install`)** vs **Running (every time: `python run.py`)**; `.env` keys not shown as `echo` commands — user is prompted. `run.py`/`run.bat`/`run.sh` hide `PYTHONPATH`.
+- **Edge-case sweep (D-032)** — atomic `cache.json` via `mkstemp+replace`, balanced JSON extraction for `reason` containing braces, `aggregation` truncation `warning`, `parser` YAML/UTF-8 contextual errors + required `env_file` warnings, `resolution` dead var cleanup, `report` empty boundary. Documented non-fixes: `mongodb` multi-host, dual `_decide`, `THINKING_BUDGETS none`, cross-platform `C:` fallback, Windows volume `C:\` colon.
+- **One LLM call per survivor** — `0 for obvious noise + 1 per interesting candidate`; `uncertain` allowed; `cache.json` key = `sha256(cache_key_dict with normalized_identity/resolution_status/final_value)`. Deterministic-only mode → `0` LLM calls by design (`uncertain 0.0`, JSONs only).
 - **Provider-agnostic** — Do not tie prompt/architecture to Gemini; `DEFAULT_MODEL` = `nvidia/nemotron-3-ultra-550b-a55b`; lazy `type: ignore` imports.
 - **Confidence is first-class + reflects strength** — `exact` → 0.85-1.0, `config` → 0.6-0.85, `unknown` → 0.0-0.6. Do not invent via prompt wording alone; strengthen evidence first.
 - **Model hidden** — `Dependency._model` private, `to_log_dict`/`cache.json` retain.
@@ -99,20 +113,28 @@ Next agent: implement Tier 2 K8s candidate discovery → same Filtering→Judge�
 ## 6. Useful Commands
 
 ```cmd
-REM Windows
+REM Windows — any user (first time vs everyday)
 git status
-set PYTHONPATH=src && python -m pytest -v
-REM judge with OpenRouter (low thinking) on absolute-path repo
-set PYTHONPATH=src && python -m blindspot.cli "C:\Users\Lekha\Projects\Docker" --out out\calcom --thinking low
-type out\calcom\report.md
-type out\calcom\graph.json
-REM if ModuleNotFoundError: No module named 'yaml', use .venv\Scripts\python instead of python
+python -m pytest -v
+REM Everyday simple start (no PYTHONPATH, handles venv):
+python run.py
+REM or: run.bat
+REM Interactive prompts: C:\path\to\YourApp + low/medium/high + API key Y/n
+REM Scripted (bypass menu, still prompts for API key if missing):
+python run.py "C:\path\to\YourApp" --thinking low
+type out\YourApp\report.md
+type out\YourApp\graph.json
+REM Alternate if run.py not used:
+set PYTHONPATH=src && python -m blindspot.cli
 ```
 
 ```bash
-# Git Bash
+# Git Bash / macOS / Linux
 git status
-PYTHONPATH=src .venv/Scripts/python -m pytest -v
+python -m pytest -v
+# Everyday:
+python run.py
+# or: bash run.sh
 # judge with Gemini (low thinking) single synthetic check
 PYTHONPATH=src .venv/Scripts/python -c "from dotenv import load_dotenv; load_dotenv(); from blindspot.parser import parse_compose_file; from blindspot.discovery import discover_candidates; from blindspot.filtering import build_evidence_packages; p=parse_compose_file('fixtures/shared_env/docker-compose.yml'); print([p.to_dict() for p in build_evidence_packages(discover_candidates(p), p)])"
 PYTHONPATH=src .venv/Scripts/python -c "from blindspot.judge import JudgeResult, validate_judge_result; validate_judge_result(JudgeResult(verdict='meaningful', confidence=0.93, reason='ok', model='test'))"
@@ -122,9 +144,10 @@ PYTHONPATH=src .venv/Scripts/python -c "from blindspot.judge import JudgeResult,
 
 ## 7. Files to Read First
 
-1. `C:\Users\Lekha\Projects\Blindspot\AGENTS.md` (§3 bounded evidence with states, §4 one call/candidate, §5 Dependency Model, §6 React Flow DATA + normalized_identity)
-2. `C:\Users\Lekha\Projects\Blindspot\PROJECT_PLAN.md` (§4 hybrid diagram, §6 DATA)
-3. `C:\Users\Lekha\Projects\Blindspot\STATE.md` (redesign 2026-09-06)
-4. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/resolution.py` (`bounded_resolve:270`, `ResolutionResult`, `MAX_RESOLUTION_DEPTH`)
-5. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/filtering.py` (`EvidencePackage` with `resolution_status`, `_decide_with_project`)
-6. `C:\Users\Lekha\Projects\Blindspot\src/blindspot/graph.py` (`_resource_key` normalized dedup)
+1. `AGENTS.md` (§3 bounded evidence with states, §4 one call/candidate, §5 Dependency Model, §6 React Flow DATA + normalized_identity)
+2. `PROJECT_PLAN.md` (§4 hybrid diagram, §6 DATA)
+3. `STATE.md` (general setup + deterministic fallback 2026-09-07)
+4. `src/blindspot/resolution.py` (`bounded_resolve:270`, `ResolutionResult`, `MAX_RESOLUTION_DEPTH`)
+5. `src/blindspot/filtering.py` (`EvidencePackage` with `resolution_status`, `_decide_with_project`)
+6. `src/blindspot/graph.py` (`_resource_key` normalized dedup)
+7. `run.py` / `README.md` (First Time Setup vs Running — general purpose)

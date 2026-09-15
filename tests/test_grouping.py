@@ -230,9 +230,11 @@ services:
     assert report.summary["resource_groups"] == 1
     assert report.summary["observations"] == 3
     assert report.summary["meaningful_groups"] == 1
-    assert "Services analyzed: 3" in report.to_markdown()
+    # New markdown uses "Services discovered" (prompt §3) — also check old alias still in summary
+    assert "Services discovered: 3" in report.to_markdown()
     assert "Shared resource groups: 1" in report.to_markdown()
-    assert "Configuration observations: 3" in report.to_markdown()
+    assert "Configuration observations: 3" not in report.to_markdown()  # now in Pipeline summary as Observations
+    assert "Observations: 3" in report.to_markdown() or "Observations         : 3" in report.to_markdown() or "Observations: 3" in report.to_markdown()
 
 
 def test_empty_project_no_findings():
@@ -245,7 +247,8 @@ def test_empty_project_no_findings():
     report = build_grouped_report(model, graph_data=graph)
     assert report.summary["resource_groups"] == 0
     assert report.summary["observations"] == 0
-    assert "No meaningful coupling groups found" in report.to_markdown()
+    # New 0-services case now explicitly says no services discovered (prompt §7)
+    assert "No services discovered" in report.to_markdown()
 
 
 def test_near_miss_not_grouped():

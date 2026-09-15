@@ -188,8 +188,12 @@ def aggregate_evidence_packages(packages: List[EvidencePackage]) -> List[Grouped
 
         # Bounded: cap observations stored? Already bounded via filtering; but ensure we don't exceed large counts
         # Keep all observations but they are already bounded (max candidates pairwise). For Cal.com 6 obs, fine.
-        # For safety, cap at 20, deterministic sorted
+        # For safety, cap at 20, deterministic sorted — warn if truncated
         if len(obs_list) > 20:
+            import logging
+            logging.getLogger("blindspot.aggregation").warning(
+                "group %s truncated from %d to 20 observations", key, len(obs_list)
+            )
             obs_list = obs_list[:20]
 
         grouped = GroupedEvidencePackage(

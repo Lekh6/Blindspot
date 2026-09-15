@@ -338,10 +338,7 @@ def bounded_resolve(
             break
         # Deterministic: process matches in order found, but collect unique vars in sorted order for stability
         # We will attempt to resolve each var found this round
-        progressed = False
-        # Build next value by replacing each match
-        # Need to handle default-aware resolution per match
-        next_value = current
+        # (removed dead variables: progressed/next_value — were unused)
         # For chain recording, group by variable but we record one step per distinct var resolved this iteration
         # Use deterministic sorted unique vars present in current that are resolvable this round
         vars_in_current = []
