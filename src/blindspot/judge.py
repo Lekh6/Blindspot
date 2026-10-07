@@ -242,7 +242,7 @@ TASK
 Determine whether the evidence indicates:
 1. meaningful coupling — shared resource implies services are implicitly coupled (e.g. shared DB host/volume, same normalized external resource)
 2. coincidental overlap — same name/value by chance, no real coupling (e.g. generic PORT, unrelated strings)
-3. insufficient evidence — cannot decide from given facts
+3. uncertain (insufficient evidence) — cannot decide from given facts
 
 Confidence guidance (reflect evidence strength, not just wording):
 - High confidence (0.85-1.0): resolution_status internal/external_confirmed + identity_strength exact + normalized_identity deterministically established
@@ -859,7 +859,7 @@ Determine whether these {grouped.service_count} services exhibit meaningful impl
 
 1. meaningful — shared resource implies services are implicitly coupled (e.g. same DB, same volume, same external service)
 2. coincidental — same name/value by chance, no real coupling
-3. insufficient — cannot decide from given facts
+3. uncertain (insufficient evidence) — cannot decide from given facts
 
 Confidence guidance:
 - High (0.85-1.0): resolution internal/external_confirmed + strength exact + normalized identity deterministically established

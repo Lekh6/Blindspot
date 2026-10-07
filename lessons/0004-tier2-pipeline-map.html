@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lesson 0004 — Tier 2 Map: Same Pipeline, New Sources</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<p class="muted"><a href="0003-filtering-how-every-step.html">← 0003</a> · <a href="../reference/tier2-k8s-cheatsheet.html">Reference: K8s cheat sheet</a> · <a href="../MISSION.md">Mission</a></p>
+
+<h1>0004 — Tier 2 Map: Same Pipeline, New Sources</h1>
+<p class="muted">Tier 2 adds <strong>Kubernetes manifests</strong> as a second candidate source. Same 7 stages, same downstream — only Stages 1–2 learn new inputs. 8-minute lesson, one win: you can trace a shared ConfigMap from YAML to graph node without inventing a new architecture.</p>
+
+<div class="diag" aria-label="pipeline">
+<span>1. Parse K8s ★</span><span class="arrow">→</span><span>2. Discovery K8s ★</span><span class="arrow">→</span><span>3. Filtering</span><span class="arrow">→</span><span>4. Judge 1/group</span><span class="arrow">→</span><span>5. Model</span><span class="arrow">→</span><span>6. Graph</span><span class="arrow">→</span><span>7. Report</span>
+</div>
+<div class="card">Core rule (<code>AGENTS.md:385</code>, <code>DECISIONS.md:D-012</code>): <strong>K8s findings enter the existing pipeline. No separate downstream.</strong> Tier 1 taught you Compose → candidates; Tier 2 teaches manifests → <em>same</em> candidates shape.</div>
+
+<h2>0. Why Tier 2 exists</h2>
+<p>Compose covers one file per repo. Real clusters describe coupling in many YAML files: two <code>Deployment</code>s can share a <code>ConfigMap</code> name and break together on rename — invisible to network tracing, exactly like <code>DB_HOST</code> sharing in Tier 1. Tier 2 catches <strong>shared ConfigMap / shared Secret / shared volume</strong> via YAML parsing (<code>pyyaml</code>, already in requirements).</p>
+
+<h2>1. Stage 1′ — K8s parse + workload normalization</h2>
+<p>Input: multi-doc YAML (<code>---</code> separated). Parse every document, split by <code>kind</code>:</p>
+<pre># workloads (become "services") — normalize these:
+Deployment / StatefulSet / DaemonSet / Job / CronJob / Pod
+  → Workload{ name, namespace (=default if absent), containers[],
+              env[], envFrom[], volumeMounts[], volumes[] }
+
+# resources (become candidate targets, NOT services):
+ConfigMap / Secret / PersistentVolumeClaim</pre>
+<p>Preserve <code>metadata.namespace</code> + source file per object — Stage 3 needs both for identity and provenance. Same idea as Tier 1 preserving <code>env_file</code> origin and <code>image:</code>.</p>
+<pre># minimal example both workloads reference:
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api, namespace: default }
+spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        envFrom:
+        - configMapRef: { name: game-demo }   # ← the coupling point</pre>
+
+<h2>2. Stage 2′ — Candidate discovery (broad, deterministic)</h2>
+<p>Pairwise over workloads, same as <code>discovery.py:40</code>. Three scanners:</p>
+<pre>① shared ConfigMap:  envFrom.configMapRef.name
+                      env.valueFrom.configMapKeyRef.name
+                      volumes.configMap.name
+                      volumes.projected.sources[].configMap.name
+② shared Secret:      envFrom.secretRef.name
+                      env.valueFrom.secretKeyRef.name
+                      volumes.secret.secretName
+                      projected.sources[].secret.name
+③ shared volume:      volumes.persistentVolumeClaim.claimName
+                      same hostPath.path (exact match only)</pre>
+<p class="muted">Broad = <code>kube-api-access-*</code> still produces a candidate here; filtering drops it next. Never filter inside discovery.</p>
+
+<h2>3. Stage 3′ — Filtering + bounded evidence (the interesting part)</h2>
+<div class="card">Drop: <code>projected kube-api-access-*</code> (service-account token, like <code>PORT</code> in Tier 1) + generic env keys (<code>PORT/DEBUG/LOG_LEVEL</code> unchanged). Keep: app ConfigMaps (<code>game-demo</code>), credential Secrets (<code>db-creds</code>), shared PVCs.</div>
+<p>One bounded package per surviving group (same shape as Tier 1, K8s fields added):</p>
+<pre>EvidencePackage{
+  workload_a: api, workload_b: worker,
+  resource: game-demo, resource_type: configmap,
+  keys_used: [player_initial_lives] (bounded, not all 20 keys),
+  binding: envFrom vs volumeMount:/config (how each consumes it),
+  namespace: default,
+  resolution: FOUND (object exists, attach data keys)
+              / MISSING (referenced but no object → unresolved)
+  related_config: sibling refs only (e.g. db-creds alongside game-demo)
+}</pre>
+<p>Identity for aggregation/dedup: <code>configmap:default/game-demo</code> — namespace + type included, so cross-namespace same-name ≠ same resource.</p>
+
+<h2>4–7. Unchanged downstream (read once, trust)</h2>
+<ul>
+<li><strong>Stage 4 Judge</strong> — same grouped prompt (<code>judge.py:96</code>), 0 calls for noise + 1/group, <code>verdict/confidence/reason</code>, cache key now includes <code>namespace + keys_used + resolution</code>.</li>
+<li><strong>Stage 5 Model</strong> — same <code>CouplingGroup</code>; "service" now holds a workload name.</li>
+<li><strong>Stage 6 Graph</strong> — same bipartite rule: <code>api → configmap:default/game-demo ← worker</code>. Never <code>api → worker</code>.</li>
+<li><strong>Stage 7 Report/CLI</strong> — same report + accounting; CLI input discovery extends to <code>*.yaml</code> alongside <code>docker-compose.yml</code>.</li>
+</ul>
+
+<h2>Try it — predict the pipeline</h2>
+<p class="muted">Retrieval practice: answers equal length by design.</p>
+
+<div class="quiz" id="q1">
+<h3>Q1. <code>api</code> + <code>worker</code> both <code>envFrom.configMapRef: game-demo</code>, same namespace. Discovery → ?</h3>
+<button data-correct="true">Kept — shared ConfigMap needs judgment</button>
+<button data-correct="false">Dropped — generic noise always ignored</button>
+<button data-correct="false">Kept — named volume strong signal</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q2">
+<h3>Q2. Both mount <code>projected kube-api-access-xyz</code> token volume. Filtering → ?</h3>
+<button data-correct="false">Kept — shared ConfigMap needs judgment</button>
+<button data-correct="true">Dropped — infra token noise, no LLM</button>
+<button data-correct="false">Kept — shared Secret needs judgment</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q3">
+<h3>Q3. Same ConfigMap name, namespaces <code>prod</code> vs <code>dev</code>. Identity → ?</h3>
+<button data-correct="false">Same group — name match merges always</button>
+<button data-correct="true">Different resources — namespace splits identity</button>
+<button data-correct="false">Dropped pair — cross-namespace never valid</button>
+<div class="feedback"></div>
+</div>
+
+<div class="quiz" id="q4">
+<h3>Q4. Where do K8s candidates go after discovery?</h3>
+<button data-correct="false">Separate K8s judge, graph, report path</button>
+<button data-correct="true">Same filter, judge, model, graph path</button>
+<button data-correct="false">Direct graph edge, skipping all judgment</button>
+<div class="feedback"></div>
+</div>
+
+<div class="card"><strong>Win check:</strong> You can now state for any shared ConfigMap/Secret/PVC — which stage finds it, which stage drops noise, what the evidence package holds, and what the graph node ID looks like.</div>
+
+<h2>Primary sources for this lesson</h2>
+<ul>
+<li>K8s official: <a href="https://kubernetes.io/docs/concepts/configuration/configmap/">ConfigMaps</a> (envFrom / valueFrom / volume usage), <a href="https://kubernetes.io/docs/concepts/configuration/secret/">Secrets</a>, <a href="https://kubernetes.io/docs/concepts/storage/volumes/">Volumes</a> (configMap/secret/projected), <a href="https://kubernetes.io/docs/concepts/configuration/">Configuration overview</a></li>
+<li>Internal spec: <code>AGENTS.md:371</code> (Tier 2), <code>PROJECT_PLAN.md:270</code> (Phase 6), <code>DECISIONS.md:D-012</code> (K8s replaces AST), <code>src/blindspot/discovery.py:40</code> (pairwise pattern to reuse)</li>
+</ul>
+
+<h2>What's next</h2>
+<p>Build order: K8s fixture (2 Deployments + 1 ConfigMap) → <code>k8s_parser.py</code> (multi-doc + normalize) → extend discovery → reuse Stages 3–7. <a href="../reference/tier2-k8s-cheatsheet.html">Keep the cheat sheet open</a> while we build.</p>
+
+<p class="muted no-print">Stuck? Ask me — I'm your teacher for this workspace. Which scanner field (envFrom vs valueFrom vs projected) is still fuzzy?</p>
+<p class="muted"><a href="0003-filtering-how-every-step.html">← 0003 every step</a> · <a href="../reference/tier2-k8s-cheatsheet.html">Reference cheat sheet</a> · <a href="0001-candidate-filtering.html">0001 overview</a></p>
+
+<script>
+document.querySelectorAll('.quiz').forEach(q => {
+  const fb = q.querySelector('.feedback');
+  q.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const ok = btn.dataset.correct === "true";
+      fb.textContent = ok ? "✓ Correct." : "✗ Not quite — re-read the section above.";
+      fb.style.color = ok ? "#0b6f35" : "#8a1a1a";
+      q.querySelectorAll('button').forEach(b=> b.style.opacity = b===btn ? "1" : "0.6");
+    });
+  });
+});
+</script>
+</body>
+</html>

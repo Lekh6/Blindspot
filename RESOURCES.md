@@ -7,3 +7,8 @@
 - **Docker Compose env_file spec:** https://docs.docker.com/compose/compose-file/05-services/#env_file — defines `env_file` string/list and override order implemented in `src/blindspot/parser.py:352`.
 - **Docker Compose variable substitution:** https://docs.docker.com/compose/environment-variables/envvars/#substitute-environment-variables-in-compose-files — defines `${VAR}` / `${VAR:-default}` behavior preserved in `src/blindspot/parser.py:106`.
 - **Heuristics / noisy-neighbor problem (generic motivation):** https://en.wikipedia.org/wiki/Heuristic_(computer_science) — deterministic rules to prune expensive search before probabilistic judgment.
+- **K8s ConfigMaps (Tier 2 primary):** https://kubernetes.io/docs/concepts/configuration/configmap/ — `envFrom.configMapRef` (all keys) vs `env.valueFrom.configMapKeyRef` (single key) vs `volumes.configMap` + `projected.sources` consumption patterns.
+- **K8s Secrets (Tier 2 primary):** https://kubernetes.io/docs/concepts/configuration/secret/ — `secretRef` / `secretKeyRef` / `volumes.secret.secretName`, confidential counterpart to ConfigMap.
+- **K8s Volumes incl. projected (Tier 2 primary):** https://kubernetes.io/docs/concepts/storage/volumes/ + https://kubernetes.io/docs/concepts/storage/projected-volumes/ — `configMap`, `secret`, `persistentVolumeClaim.claimName`, `projected.sources[]`, `hostPath`; service-account `kube-api-access-*` noise source.
+- **K8s Configuration overview:** https://kubernetes.io/docs/concepts/configuration/ — ConfigMap vs Secret framing used in Lesson 0004.
+- **Internal Tier 2 spec:** `AGENTS.md:371` + `PROJECT_PLAN.md:270` (Phase 6) + `DECISIONS.md:D-012` (K8s replaces AST) — candidates must enter same Filtering → Judge → Model → Graph → Report pipeline.

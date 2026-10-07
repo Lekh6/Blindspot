@@ -1,9 +1,15 @@
 # HANDOFF.md — What the Next Agent Needs to Know
 
 > Read this first when you start a session. It tells you where we left off and exactly what to do next.
+<<<<<<< HEAD
 **Last Updated:** 2026-09-07 (Input Transparency & Accounting Done)
 **Current Phase:** **Tier 1 Complete + Redesign + Resource-Centric Aggregation + Interactive CLI + Edge-Case Sweep + General Setup + Windows Input Fix + Fix .env Spam + Versioned History + Input Transparency & Accounting DONE** (parser + discovery + **bounded resolution** + **aggregation by normalized_identity** + **Grouped LLM 1/group** + **CouplingModel** + **Graph from groups** + **Grouped Report + Accounting** + **Interactive CLI: separate Services/Candidates + versioned history**) — **Tier 2 Kubernetes NEXT (whole point)**
 **Current Branch:** `main` — working tree: accounting done, 98 tests, Tier 2 next
+=======
+**Last Updated:** 2026-09-28 (Tier 1 Audit DONE — D-042; Workstream A closed)
+**Current Phase:** **WORKSTREAM B — MULTI-REPO VALIDATION (D-041/D-042)** — audit complete (119 tests green, hermetic). Next: run `python run.py` on 2–3 real OSS Compose repos, review findings vs ground truth, then evidence-based fixes only. Deepening toward L2 table-level is set as direction (D-043, provisional — no implementation until validation). No K8s adapter, dependency, fixture, source read/write analysis, or Tier 1 redesign except evidence-based fixes.
+**Current Branch:** `main` — working tree: Tier 1 frozen + audited, Tier 2 proposal-only
+>>>>>>> 8d28c21 (Working tier 1)
 
 ---
 
@@ -33,11 +39,15 @@
 
 ---
 
-## 3. Immediate Next Steps — Tier 2 is the Whole Point
+## 3. Immediate Next Steps — Validate Tier 1 on Real Repos (D-041/D-042)
 
-**Tier 1 + redesign is demoable — Tier 2 Kubernetes is next (same pipeline, provider-agnostic):**
-* Parse Kubernetes YAML → workloads → shared ConfigMap/Secret/shared-volume candidates → same `Filtering (with resolution) → Judge → Model → Graph → Report` pipeline `AGENTS.md:385`.
-* Do not create a separate downstream architecture for K8s findings.
+**Workstream A (audit) CLOSED 2026-09-28:** stages verified vs docs, 119 tests green (hermetic), e2e deterministic on fixtures + `tmp_calcom2`, 3 fixes landed (F1 Windows binds, F2 prompt wording, F4 test hermeticity) + `.venv` rebuilt. Details: `DECISIONS.md` D-042, `STATE.md` §6.
+**Tier 1 code frozen except evidence-based fixes. K8s/source deferred:**
+1. Workstream A — audit: end-to-end run, tests, determinism, evidence/verdict/confidence preservation (see §4 gotchas).
+2. Workstream B — multi-repo validation via existing CLI (`python run.py`): Cal.com + 2–3 more; per-repo candidates/findings/TP/FP/misses + unsupported configs.
+3. Workstream C — ground truth: synthetic + reviewed-real set; precision/recall where defensible; deterministic vs LLM separately; LLM reliability/calibration.
+4. Workstream D — smallest fixes for demonstrated failures only (repro + stage + regression test + re-evaluation).
+* Do NOT parse K8s YAML / add dependencies / build an adapter / start source read-write analysis / redesign Tier 1 until Tier 1 is demonstrably useful and a future gate approves it.
 
 **How to test any repo — general (any computer, not just Lekha's):**
 
@@ -96,7 +106,7 @@ Tier 1 validates via `python run.py` above; Tier 2 extends candidate discovery t
 
 ---
 
-## 5. Project Checklist — Tier 1 Done + Redesign, Tier 2 Next
+## 5. Project Checklist — Tier 1 Frozen, Tier 2 Proposal-Gated
 
 - [x] `STATE.md` Stages 1–7 DONE + redesign (78 tests, normalized dedup)
 - [x] `HANDOFF.md` redesign + Windows venv gotcha documented
@@ -104,9 +114,9 @@ Tier 1 validates via `python run.py` above; Tier 2 extends candidate discovery t
 - [x] `README.md` finished Tier 1 + redesign (pipeline stage 3 states, normalized identity, Windows cmd example `set PYTHONPATH=src && .venv\Scripts\python -m blindspot.cli ..\Docker --out out\calcom --thinking medium`, 78 tests) — still notes Tier 2 as next
 - [x] Tests 78 passed (`test_parser` 32 + `test_discovery` 8 + `test_filtering` 8 + `test_graph` 13 + `test_resolution` 17)
 - [x] `src/blindspot/{parser, discovery, resolution, filtering, judge, model, graph, report, cli}.py` complete
-- [ ] Tier 2 Kubernetes (ConfigMap/Secret/volumes, same pipeline) — **NEXT, whole point of project**
+- [ ] Tier 2 Kubernetes — **PROPOSAL ONLY (D-039)**. Approval required before: PoC fixture `fixtures/k8s_schema_share/`, key-level discovery, or any `src/` change. Mere same-database YAML parsing is not an acceptable differentiator.
 
-Next agent: implement Tier 2 K8s candidate discovery → same Filtering→Judge→Model→Graph→Report pipeline.
+Next agent: review D-039. Do NOT implement Tier 2 until the proposal is approved. Tier 1 changes only for concrete bugs.
 
 ---
 

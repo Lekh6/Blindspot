@@ -206,9 +206,15 @@ def normalize_environment(
 _KNOWN_RO_OPTIONS = {"ro", "rw"}
 _KNOWN_VOLUME_OPTIONS = {"ro", "rw", "consistent", "delegated", "cached", "z", "Z", "nocopy"}
 
+# Windows drive-letter prefix (e.g. C:\ or C:/). The drive colon must not be
+# treated as a source:target separator when splitting short volume syntax.
+_WINDOWS_DRIVE_RE = re.compile(r"^([A-Za-z]:)(?=[\\/])")
+
 
 def _is_bind_source(source: str) -> bool:
     # Bind mounts have path-like sources
+    if _WINDOWS_DRIVE_RE.match(source):
+        return True
     if source.startswith(".") or source.startswith("/") or source.startswith("~"):
         return True
     if "/" in source or "\\" in source:
@@ -267,6 +273,16 @@ def normalize_volume(entry: Any, env_vars: Optional[Dict[str, str]] = None) -> V
     # This is shallow: we resolve after split for accuracy but also try whole
     # For simplicity, resolve source/target after split
 
+    # Windows absolute host path (e.g. C:\data:/app or C:/data:/app:ro):
+    # strip the drive-letter prefix before splitting on ":" so the drive
+    # colon is not mistaken for a source:target separator. The prefix is
+    # re-attached to the parsed source below.
+    drive_prefix = ""
+    _drive_match = _WINDOWS_DRIVE_RE.match(entry)
+    if _drive_match:
+        drive_prefix = _drive_match.group(1)
+        entry = entry[len(drive_prefix):]
+
     # Split by ":" — handle 1, 2, or 3 parts
     parts = entry.split(":")
 
@@ -301,7 +317,7 @@ def normalize_volume(entry: Any, env_vars: Optional[Dict[str, str]] = None) -> V
             options_part = b
             norm_type = "anonymous"
         else:
-            source = _resolve_value(a, env_vars)
+            source = drive_prefix + _resolve_value(a, env_vars)
             target = _resolve_value(b, env_vars)
             if source == "" or source is None:
                 source = None
@@ -319,7 +335,7 @@ def normalize_volume(entry: Any, env_vars: Optional[Dict[str, str]] = None) -> V
         # source:target:options (or more colons in Windows paths — keep simple)
         # For >3 parts (e.g., Windows C:\path:/target:ro) we re-join middle
         # Simplistic: first part is source, last part is options, middle is target
-        source = _resolve_value(parts[0], env_vars)
+        source = drive_prefix + _resolve_value(parts[0], env_vars)
         options_part = parts[-1]
         target = _resolve_value(":".join(parts[1:-1]), env_vars)
 

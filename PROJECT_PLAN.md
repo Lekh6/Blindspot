@@ -206,9 +206,10 @@ This lets the final output explain not only that two services are connected, but
 
 If you finish only this, you have a complete, working, demoable tool. That's the deliverable you can promise yourself in week 1.
 
-**Tier 2 — Stretch (nice-to-have, only if pace allows):**
-- Kubernetes manifest support for shared ConfigMaps, Secrets, and relevant shared volumes (same pipeline, YAML parsing via `pyyaml`)
-- Additional validation
+**Tier 2 — Kubernetes / source analysis (deferred stretch, decision-gated — NOT current work):**
+- Only after Tier 1 is validated (audit + multi-repo evaluation + demonstrated fixes). A future extension must demonstrate a concrete capability Tier 1 cannot provide (e.g. same ConfigMap/Secret key under different env-var names across namespaces, via Service DNS → Endpoints and PVCs) — mere YAML parsing / "same database" is not sufficient
+- Same downstream pipeline where technically appropriate (YAML parsing via `pyyaml`; read-only API preferred; Secret names/keys only, never values); do not force reuse where semantics differ
+- Requires its own design + validation plan; not a condition for declaring Tier 1 complete
 
 **Why this order, not config+code together from day one:** Evidence resolution is now the one genuinely new, bounded skill here. If it eats more time than expected, you don't want it blocking the rest of the pipeline. Tier 1 has zero dependency on Kubernetes, so it's safe from that risk entirely.
 
@@ -267,10 +268,14 @@ Rough math: 1-2 hrs/day, realistically not every single day, lands somewhere aro
 - Pick **one small, real open-source multi-service repo** — pre-scout it before committing (skim its `docker-compose.yml` and a bit of source for 10-15 minutes first, so you know it's likely to have *something* interesting before spending real time on it)
 - Run your Tier 1 tool against it, note what it finds — even a messy or ambiguous result is a legitimate, honest thing to write up
 
-### Phase 6 — Stretch: Kubernetes support (Tier 2, only if time allows)
-- Parse Kubernetes manifests
-- Identify workloads referencing shared ConfigMaps, Secrets, and relevant shared volumes
-- Feed candidates through the existing filtering (with bounded evidence + resolution) → LLM Judge (1 call per candidate, cached) → Dependency Model (with confidence) → Resource Graph → Report pipeline
+### Phase 5 (revised) — Real-world validation BEFORE any extension
+- Run Tier 1 against multiple real Compose repos via existing CLI; record candidates/findings/false positives/misses per repo
+- Build manually reviewed evaluation set (synthetic + real); precision/recall where defensible; evaluate deterministic stages separately from LLM; check LLM reliability/calibration
+- Fix demonstrated weaknesses only (repro + smallest fix + regression test + re-evaluation)
+
+### Phase 6 — Tier 2 / extensions (future decision gate, not a commitment)
+- Only after Phases 1–4 above: evaluate whether K8s or source analysis adds meaningful discovery capability Tier 1 cannot provide, with concrete example + design + validation plan
+- No K8s adapter, dependency, source read/write analysis, or Tier 1 redesign until approved
 
 ### Phase 7 — Write-up (always do this, however far you got)
 - What you built, what it found, one or two concrete examples (synthetic + real)

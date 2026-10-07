@@ -366,15 +366,13 @@ It must include:
 - deliberate near-miss test cases
 - validation against one small real-world open-source multi-service repository
 
-If Tier 1 is complete, BlindSpot is a complete working and demoable project.
+If Tier 1 is complete, BlindSpot is a complete working and demoable project. Tier 1 is **frozen** (D-038): change it only for concrete bugs/validation issues, and word findings as **potential** coupling with evidence + confidence — never as proven runtime behavior.
 
-## Tier 2 — Stretch
+## Tier 2 — Kubernetes-backed discovery (deferred stretch, decision-gated)
 
-Only implement Tier 2 after Tier 1 is working.
+Kubernetes remains a possible future direction — but it is **deferred until Tier 1 is validated** (audit + real-world evaluation + demonstrated fixes). **No implementation until a future extension passes a concrete-capability decision gate** (previously D-039 proposal). Mere Kubernetes YAML parsing or "two workloads use the same database" is **not** a sufficient differentiator. The approved differentiator must be a concrete capability Tier 1 cannot provide, e.g. **same ConfigMap/Secret key consumed under different env-var names across namespaces, resolved through Service DNS → Endpoints and PVCs** (see `DECISIONS.md` D-039).
 
-Tier 2 adds Kubernetes manifest support.
-
-Initial scope:
+When approved, Kubernetes evidence (workloads, namespaces, Services/endpoints, ConfigMap/Secret references — **Secret names/keys only, never values** — PVCs/volumes, preferably via manifests and/or read-only API) enters the existing pipeline:
 
 - Kubernetes YAML parsing
 - workload normalization
@@ -393,7 +391,19 @@ Candidate Discovery
 
 Do not create a separate downstream architecture for Kubernetes findings.
 
-AST/source-code analysis is no longer part of the project scope.
+Source-code analysis may **optionally and selectively** strengthen or distinguish a finding (e.g. shared application-level state); it is never mandatory per finding and never replaces Kubernetes as Tier 2. No query-level mapping, full call graphs, or runtime proof required. Label evidence as **configuration-confirmed vs statically inferred vs runtime-observed** and never claim runtime behavior from static evidence.
+
+## Deepening Direction (post-validation, provisional — D-043)
+
+This is a decision down the build path, not a final spec. After Tier 1 validation, deepen toward **table-level (L2)** findings with AI as a **verifier of small bounded tasks**, not a discoverer.
+
+- **Dependency taxonomy:** L0 shared infrastructure → L1 shared store → L2 shared table. Each finding is additionally labeled **visible** or **hidden** (hidden = implicit coupling, orthogonal to depth). L3/L4 (row-level inference/proof) are out of scope.
+- **AI micro-verifier:** deterministic code builds tiny evidence bundles (snippet + question); the LLM returns schema-locked micro-verdicts (`entity`, `access: read|write|none`, `confidence`), cached per snippet+question. Deterministic hits skip the LLM.
+- **Prompt unit:** one prompt per resource group — discovery map + compose slice + bounded file tree + ID-tagged questions; JSON-array response echoing IDs, validated per item.
+- **Weighted combiner:** LLM outputs are signals; deterministic versioned weights combine them into bands (`strong / likely / possible / no-evidence`) with a visible score breakdown. No binary true/false verdicts at depth.
+- **Pointer chains:** findings carry service → variable → value → store → table → snippet (`file:line`) → micro-verdict links, each labeled machine-made vs AI-judged.
+
+No `src/` changes for this direction until a sequenced plan (taxonomy lock → value-based discovery → table extractor → micro-verifier + combiner → layered graph/report) is approved after validation.
 
 ---
 
@@ -426,10 +436,11 @@ Build in this order:
 7. Dependency model with verdict/confidence/reason
 8. Resource-based graph output (Service ↔ Resource)
 9. Report generation (evidence + confidence)
-10. Real-world repository validation
-11. Tier 2 Kubernetes support only if time allows
+10. Real-world repository validation (multiple repos, manual review, precision/recall where defensible)
+11. Evidence-based fixes for demonstrated weaknesses only
+12. Tier 2 Kubernetes / source analysis only after Tier 1 is demonstrably useful (future decision gate, not a commitment)
 
-Do not allow Tier 2 work to block completion of Tier 1.
+Do not allow Tier 2 or source-analysis work to block validation of Tier 1. Do not add platforms, layers, or agents to raise feature count. Every change must improve detection quality, evidence strength, correctness, usability, or validation.
 
 ---
 
