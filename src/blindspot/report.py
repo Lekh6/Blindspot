@@ -341,6 +341,11 @@ class GroupedReportFinding:
     verdict: str
     confidence: float
     reason: str
+    classification: str = "uncertain"
+    score: float = 0.0
+    score_breakdown: Dict[str, float] = field(default_factory=dict)
+    uncertainty: float = 1.0
+    scoring_version: str = ""
 
     @classmethod
     def from_group(cls, group: Any) -> "GroupedReportFinding":
@@ -361,6 +366,11 @@ class GroupedReportFinding:
             verdict=group.verdict,
             confidence=float(group.confidence),
             reason=group.reason.strip(),
+            classification=getattr(group, "classification", "uncertain"),
+            score=float(getattr(group, "score", 0.0)),
+            score_breakdown=dict(getattr(group, "score_breakdown", {}) or {}),
+            uncertainty=float(getattr(group, "uncertainty", 1.0)),
+            scoring_version=str(getattr(group, "scoring_version", "")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -381,6 +391,11 @@ class GroupedReportFinding:
             "verdict": self.verdict,
             "confidence": self.confidence,
             "reason": self.reason,
+            "classification": self.classification,
+            "score": self.score,
+            "score_breakdown": dict(self.score_breakdown),
+            "uncertainty": self.uncertainty,
+            "scoring_version": self.scoring_version,
         }
 
 
@@ -554,7 +569,7 @@ class GroupedReportData:
                 lines.append("_No meaningful coupling groups found — all candidates were filtered as generic or judged coincidental/uncertain._")
             lines.append("")
             lines.append("---")
-            lines.append("BlindSpot Tier 1 identifies shared resource-level configuration and potential implicit coupling. It does not claim a specific application-level dependency without source-level evidence.")
+            lines.append("BlindSpot identifies potential shared resource-level coupling with evidence and uncertainty. It does not claim proven runtime or application behavior.")
             return "\n".join(lines)
 
         # Each finding — conclusion first
@@ -570,6 +585,9 @@ class GroupedReportData:
             conf_label = _confidence_label(f.confidence)
             lines.append(f"Assessment: {verdict_label}")
             lines.append(f"Confidence: {conf_label} ({f.confidence:.2f})")
+            if getattr(f, "scoring_version", ""):
+                lines.append(f"Classification: {f.classification} (score {f.score:.1f}, uncertainty {f.uncertainty:.2f})")
+                lines.append("Potential coupling — not proven runtime/application behavior.")
             lines.append("")
             lines.append(f"**Reason:** {f.reason}")
             lines.append("")
@@ -630,11 +648,14 @@ class GroupedReportData:
                     lines.append(f"- (+{len(f.representative_chain)-3} more)")
                 lines.append("")
             lines.append(f"Observations: {f.evidence_count} configuration observations across {f.service_count} services (variables: {', '.join(sorted(f.observation_resources)) if f.observation_resources else 'none'})")
+            if getattr(f, "score_breakdown", {}):
+                bd = ", ".join(f"{k}={v:+.1f}" for k, v in sorted(f.score_breakdown.items()))
+                lines.append(f"Score breakdown ({f.scoring_version or 'scored'}): {bd}")
             lines.append("")
 
         # Boundary statement once
         lines.append("---")
-        lines.append("BlindSpot Tier 1 identifies shared resource-level configuration and potential implicit coupling. It does not claim a specific application-level dependency without source-level evidence.")
+        lines.append("BlindSpot identifies potential shared resource-level coupling with evidence and uncertainty. It does not claim proven runtime or application behavior.")
         return "\n".join(lines)
 
 

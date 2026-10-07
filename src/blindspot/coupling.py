@@ -41,6 +41,12 @@ class CouplingGroup:
     verdict: str  # meaningful | coincidental | uncertain
     confidence: float
     reason: str
+    # BASE enrichment (deterministic scoring from structured signals; defaults = not scored)
+    classification: str = "uncertain"  # strong | likely | possible | uncertain
+    score: float = 0.0
+    score_breakdown: Dict[str, float] = field(default_factory=dict)
+    uncertainty: float = 1.0
+    scoring_version: str = ""
     _model: str = field(default="unknown", repr=False, compare=False)
     cache_key: str = field(default="", compare=False)
     created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), compare=False)
@@ -116,6 +122,11 @@ class CouplingGroup:
             "verdict": self.verdict,
             "confidence": self.confidence,
             "reason": self.reason,
+            "classification": self.classification,
+            "score": self.score,
+            "score_breakdown": dict(self.score_breakdown),
+            "uncertainty": self.uncertainty,
+            "scoring_version": self.scoring_version,
         }
 
     def to_log_dict(self) -> Dict[str, Any]:
@@ -126,6 +137,13 @@ class CouplingGroup:
     @property
     def model(self) -> str:
         return self._model
+
+    def with_scoring(self, scoring: Any) -> "CouplingGroup":
+        """Return a copy enriched with deterministic scoring (BASE)."""
+        from dataclasses import replace
+        return replace(self, classification=scoring.classification, score=float(scoring.score),
+                       score_breakdown=dict(scoring.breakdown), uncertainty=float(scoring.uncertainty),
+                       scoring_version=getattr(scoring, "scoring_version", ""))
 
 
 @dataclass
@@ -182,6 +200,11 @@ class CouplingModel:
                     verdict=item["verdict"],
                     confidence=float(item["confidence"]),
                     reason=item["reason"],
+                    classification=item.get("classification", "uncertain"),
+                    score=float(item.get("score", 0.0)),
+                    score_breakdown=dict(item.get("score_breakdown", {})),
+                    uncertainty=float(item.get("uncertainty", 1.0)),
+                    scoring_version=str(item.get("scoring_version", "")),
                     _model=item.get("_log", {}).get("model", "unknown") if "_log" in item else "unknown",
                     cache_key=item.get("_log", {}).get("cache_key", ""),
                 )

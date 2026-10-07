@@ -42,6 +42,18 @@ from .graph import (
 from .model import Dependency, DependencyModel, build_dependency_model
 from .coupling import CouplingGroup, CouplingModel, build_coupling_model
 from .aggregation import GroupedEvidencePackage, aggregate_evidence_packages
+from .context import ContextBundle, build_context_bundle, build_file_tree, collect_source_snippets
+from .context_judge import (
+    MicroSignal,
+    QUESTIONS,
+    build_contextual_prompt,
+    judge_contextual_package,
+    judge_contextual_packages,
+    parse_or_failsafe,
+    signals_to_judge_result,
+    validate_signals,
+)
+from .scoring import SCORING_VERSION, ScoringResult, score_group
 from .report import (
     GroupedReportData,
     GroupedReportFinding,
@@ -72,6 +84,8 @@ __all__ = [
     "Candidate",
     "CouplingGroup",
     "CouplingModel",
+    "ContextBundle",
+    "MicroSignal",
     "Dependency",
     "DependencyModel",
     "EvidencePackage",
@@ -98,6 +112,8 @@ __all__ = [
     "GeminiJudgeClient",
     "OpenRouterJudgeClient",
     "aggregate_evidence_packages",
+    "build_context_bundle",
+    "build_contextual_prompt",
     "build_coupling_model",
     "build_dependency_model",
     "build_evidence_package",
@@ -115,6 +131,8 @@ __all__ = [
     "filter_and_build_evidence",
     "filter_candidates",
     "filter_with_reasons",
+    "judge_contextual_package",
+    "judge_contextual_packages",
     "judge_evidence_package",
     "judge_evidence_packages",
     "judge_grouped_package",
@@ -125,5 +143,9 @@ __all__ = [
     "normalize_volumes",
     "parse_compose_file",
     "parse_project",
+    "parse_or_failsafe",
     "placeholder_future_judge",
+    "score_group",
+    "signals_to_judge_result",
+    "validate_signals",
 ]

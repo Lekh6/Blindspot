@@ -631,39 +631,96 @@ def run_one_repo(
         client = None  # type: ignore[assignment]
         llm_calls = 0
         cache_hits = 0
+        model = CouplingModel.from_grouped_judgments(pairs)
     else:
         c_path = str(cache_path) if cache_path else None
-        from .judge import judge_grouped_packages
-        # Pre-count cache hits for accounting without extra LLM calls
-        if c_path and Path(c_path).exists():
-            try:
-                import json as _json
-                from .judge import _load_cache  # type: ignore
+        # BASE fast-track: contextual judge + deterministic scoring (primary),
+        # legacy grouped judge as fallback. D-042 pipeline otherwise intact.
+        try:
+            from .context import build_context_bundle
+            from .context_judge import judge_contextual_packages
+            from .judge import JudgeResult as _JR2
+            from .scoring import score_group, verdict_from_scoring
 
-                _cache_before = _load_cache(c_path)
-                # _cache_before is flat {key: result}, need to check each group's key
-                from .judge import _cache_key_for_grouped  # type: ignore
-
-                for g in grouped:
-                    try:
-                        k = _cache_key_for_grouped(g)
-                        if k in _cache_before:
-                            cache_hits += 1
-                    except Exception:
-                        pass
-                llm_calls = len(grouped) - cache_hits
-            except Exception:
+            bundles = {g.grouping_key: build_context_bundle(g, project, repo_path) for g in grouped}
+            # Pre-count contextual cache hits for accounting
+            if c_path and Path(c_path).exists():
+                try:
+                    from .judge import _load_cache as _lc2
+                    from .context_judge import _cache_key as _ctx_key
+                    _cb = _lc2(c_path)
+                    for g in grouped:
+                        try:
+                            if _ctx_key(g, bundles[g.grouping_key]) in _cb:
+                                cache_hits += 1
+                        except Exception:
+                            pass
+                    llm_calls = len(grouped) - cache_hits
+                except Exception:
+                    llm_calls = len(grouped)
+                    cache_hits = 0
+            else:
                 llm_calls = len(grouped)
                 cache_hits = 0
-        else:
-            llm_calls = len(grouped)
-            cache_hits = 0
-
-        pairs = judge_grouped_packages(grouped, client, cache_path=c_path, use_cache=bool(c_path))
+            ctx_results = judge_contextual_packages(grouped, bundles, client,
+                                                    cache_path=c_path, use_cache=bool(c_path))
+            pairs = []
+            _scorings = []
+            for g, signals, mname in ctx_results:
+                sc = score_group(g, signals)
+                verdict, conf, reason = verdict_from_scoring(sc, signals)
+                pairs.append((g, _JR2(verdict=verdict, confidence=conf, reason=reason, model=mname)))
+                _scorings.append(sc)
+            model = CouplingModel.from_grouped_judgments(pairs)
+            # Enrich with deterministic scoring (replaceable layer output)
+            try:
+                model = CouplingModel([g.with_scoring(sc) for g, sc in zip(model.groups, _scorings)])
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"  [warning] BASE contextual path failed ({type(e).__name__}), falling back to legacy judge.")
+            from .judge import judge_grouped_packages
+            if c_path and Path(c_path).exists():
+                try:
+                    from .judge import _load_cache
+                    from .judge import _cache_key_for_grouped
+                    _cache_before = _load_cache(c_path)
+                    for g in grouped:
+                        try:
+                            k = _cache_key_for_grouped(g)
+                            if k in _cache_before:
+                                cache_hits += 1
+                        except Exception:
+                            pass
+                    llm_calls = len(grouped) - cache_hits
+                except Exception:
+                    llm_calls = len(grouped)
+                    cache_hits = 0
+            else:
+                llm_calls = len(grouped)
+                cache_hits = 0
+            pairs = judge_grouped_packages(grouped, client, cache_path=c_path, use_cache=bool(c_path))
+            model = CouplingModel.from_grouped_judgments(pairs)
+            # Score fallback too (signals = failsafe) so report still shows classification
+            try:
+                from .scoring import score_group as _sg
+                from .context_judge import validate_signals as _vs
+                _sig = _vs([])
+                model = CouplingModel([g.with_scoring(_sg(g.grouped_package or g, _sig)) for g in model.groups])
+            except Exception:
+                pass
         # After judging, if cache was used, actual cache hits may be higher than pre-count
         # For simplicity, keep pre-count; llm_calls is groups not in cache before call
 
-    model = CouplingModel.from_grouped_judgments(pairs)
+    # Deterministic-only scoring enrichment (no LLM): run scoring on failsafe signals
+    if deterministic_only:
+        try:
+            from .scoring import score_group as _sg2
+            from .context_judge import _failsafe_signal, QUESTION_IDS
+            _sig2 = [_failsafe_signal(q, "deterministic-only") for q in QUESTION_IDS]
+            model = CouplingModel([g.with_scoring(_sg2(g.grouped_package or g, _sig2)) for g in model.groups])
+        except Exception:
+            pass
     graph = build_graph_from_groups(model, meaningful_only=meaningful_only)
     # Build full accounting (prompt §2)
     raw_candidates = len(candidates)

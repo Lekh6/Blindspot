@@ -39,3 +39,17 @@ report.md
 out/
 cache.json
 .cache/
+
+# Internal docs — local only (keep README.md public)
+# Full-vision track + BASE fast-track docs stay off GitHub
+AGENTS.md
+MISSION.md
+STATE.md
+HANDOFF.md
+DECISIONS.md
+PROJECT_PLAN.md
+RESOURCES.md
+tmp_*.md
+base/
+lessons/
+reference/
