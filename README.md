@@ -395,10 +395,11 @@ Conclusion first, evidence second, technical internals last. No `generic_variabl
 Blindspot/
 ├── AGENTS.md, PROJECT_PLAN.md, STATE.md, DECISIONS.md, HANDOFF.md
 ├── .env (keys, gitignored), cache.json (gitignored), out/<repo>/ (reports, gitignored)
-├── fixtures/ (shared_env, shared_volume, near_miss)  # !fixtures/**/.env tracked
+├── fixtures/ (shared_env, shared_volume, near_miss, stage12_levels)  # !fixtures/**/.env tracked
 ├── src/blindspot/
-│   ├── parser.py (Service.image, env_file, ${VAR}, count_named_volumes)
-│   ├── discovery.py (Candidate resource+value split, pairwise)
+│   ├── inputs.py (adapter boundary: SUPPORTED_COMPOSE_FILENAMES 4 YAML + 2 JSON, load_compose_document, discover/find_compose_file; K8s/Terraform explicitly unsupported)
+│   ├── parser.py (Service.image/depends_on/source_file, Project.sources, env_file, ${VAR}, count_named_volumes; YAML+equivalent JSON share _parse_services)
+│   ├── discovery.py (Candidate{candidate_id/level/relationship_type/origin/resource_identity/provenance}; L0 depends_on + L1 shared_env/shared_volume/shared_endpoint cross-var identity, deterministic dedup/sort)
 │   ├── filtering.py (GENERIC_ENV_KEYS, EvidencePackage, bounded resolution, _decide_with_project)
 │   ├── resolution.py (bounded_resolve, ResolutionResult/Step, MAX_RESOLUTION_DEPTH=10, cycle, normalize postgresql|host|port|db)
 │   ├── aggregation.py (aggregate_evidence_packages, GroupedEvidencePackage, grouping by normalized_identity)
@@ -408,8 +409,16 @@ Blindspot/
 │   ├── graph.py (GraphNode/Edge/Data, build_graph + build_graph_from_groups, dedup by normalized_identity/grouping_key)
 │   ├── report.py (ReportFinding/Data + GroupedReportFinding/Data, build_report + build_grouped_report — now with application/inputs/analysis + Analysis input/Pipeline summary + zero-result explanations)
 │   └── cli.py (interactive: absolute C:\ + low/medium/high + input source tracking + full pipeline accounting + versioned history)
-└── tests/ (test_parser 32, test_discovery 8, test_filtering 8, test_graph 13, test_resolution 17, test_grouping 14, test_accounting 6)
+└── tests/ (test_parser 32, test_discovery 8, test_filtering 8, test_graph 13, test_resolution 17, test_grouping 14, test_accounting 6, test_audit 21, test_stage12 12 → 131 green, hermetic)
 ```
+
+## Input Formats & Dependency Levels (Stage 1+2)
+
+**Supported:** `docker-compose.yml|yaml`, `compose.yml|yaml` + equivalent `docker-compose.json`/`compose.json` (same Compose model, same discovery — JSON is not a separate implementation). `.env` + service `env_file` (string/list/`{path,required}`), mapping+list env syntax, `${VAR}`/`${VAR:-default}`/`$VAR` with unresolved preserved, multi-file merge (env override, volumes union, `depends_on` union, image latest-wins, sources unioned).
+
+**Unsupported (explicit):** Kubernetes YAML, Terraform/HCL (future adapters, not built), remote URLs, non-mapping top-level documents. Unresolved `${VAR}` is never invented and never silently dropped.
+
+**Levels:** `L0` explicit (`depends_on`, `resource_type: service_dependency` — baseline context, missing targets kept as unresolved, rendered as resource nodes not direct edges) vs `L1` shared-resource (`shared_env` same key, `shared_volume`, `shared_endpoint` same `protocol|host|port|db` via different var names — e.g. `DATABASE_URL` vs `DB_URL`). `L2` table-level is future only. Generic overlap (`PORT 8000≠9000`) never becomes a resource dependency. Every candidate carries deterministic `candidate_id` (sha256-16, order-independent), `provenance`, and serializable `to_dict()`.
 
 ---
 

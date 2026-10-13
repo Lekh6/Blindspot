@@ -1,0 +1,27 @@
+services:
+  api:
+    image: myapp/api:1.0
+    depends_on:
+      - db
+      - cache
+    environment:
+      DATABASE_URL: postgresql://app:secret@db:5432/appdb
+      PORT: 8000
+      MYSTERY_REF: ${MISSING_VAR}
+  worker:
+    image: myapp/worker:1.0
+    depends_on:
+      db: {condition: service_started}
+    environment:
+      DB_URL: postgresql://other:other@db:5432/appdb
+      PORT: 9000
+      MYSTERY_REF: ${MISSING_VAR}
+  db:
+    image: postgres:16
+  cache:
+    image: redis:7
+  lonely:
+    image: myapp/lonely:1.0
+    depends_on: [ghost]
+    environment:
+      LONELY_ONLY: "1"

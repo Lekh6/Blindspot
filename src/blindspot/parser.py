@@ -14,10 +14,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Tuple
 
 import yaml
 from dotenv import dotenv_values  # type: ignore[import-untyped]
+
+from .inputs import load_compose_document
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +49,11 @@ class Service:
     environment: Dict[str, Optional[str]] = field(default_factory=dict)
     volumes: List[Volume] = field(default_factory=list)
     image: Optional[str] = None
+    # L0 explicit dependencies (Compose `depends_on`, list or long-syntax mapping).
+    # Sorted tuple for determinism. Empty when not declared.
+    depends_on: Tuple[str, ...] = ()
+    # Provenance: originating Compose file label where practical (best-effort).
+    source_file: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -55,17 +62,26 @@ class Service:
         }
         if self.image is not None:
             d["image"] = self.image
+        if self.depends_on:
+            d["depends_on"] = list(self.depends_on)
+        if self.source_file is not None:
+            d["source_file"] = self.source_file
         return d
 
 
 @dataclass(frozen=True)
 class Project:
     services: Dict[str, Service] = field(default_factory=dict)
+    # Provenance: Compose source file(s) this Project was parsed from (best-effort).
+    sources: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "services": {name: svc.to_dict() for name, svc in self.services.items()}
         }
+        if self.sources:
+            d["sources"] = list(self.sources)
+        return d
 
     def count_named_volumes(self) -> int:
         """Distinct named volumes across all services (Tier 1 scope)."""
@@ -78,23 +94,30 @@ class Project:
 
 
 # ---------------------------------------------------------------------------
-# 1. Reading YAML
+# 1. Reading Compose documents (YAML or equivalent JSON via inputs adapter)
 # ---------------------------------------------------------------------------
 
 def _load_yaml(compose_path: Path) -> Dict[str, Any]:
-    try:
-        text = compose_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as e:
-        raise ValueError(f"Compose file {compose_path} is not valid UTF-8: {e}") from e
-    try:
-        data = yaml.safe_load(text)
-    except yaml.YAMLError as e:
-        raise ValueError(f"Compose file {compose_path} is not valid YAML: {e}") from e
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Compose file {compose_path} top-level must be a mapping")
-    return data
+    """Backward-compatible loader: delegates to inputs.load_compose_document."""
+    return load_compose_document(compose_path)
+
+
+def normalize_depends_on(raw: Any) -> Tuple[str, ...]:
+    """Normalize Compose `depends_on` (list, mapping/long-syntax, or single string).
+
+    Long-syntax mapping keys are service names (conditions ignored for L0).
+    Returns sorted tuple for determinism. Unknown shapes coerce conservatively.
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        return (raw,) if raw else ()
+    if isinstance(raw, dict):
+        return tuple(sorted(str(k) for k in raw.keys() if str(k)))
+    if isinstance(raw, (list, tuple)):
+        names = [str(x) for x in raw if str(x)]
+        return tuple(sorted(names))
+    return (str(raw),) if str(raw) else ()
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +476,11 @@ def _load_service_env_files(
 def _merge_projects(projects: List[Project]) -> Project:
     """Deep-merge projects in order (for multi-file `docker compose -f`)."""
     merged_services: Dict[str, Service] = {}
+    merged_sources: List[str] = []
     for proj in projects:
+        for s in proj.sources:
+            if s not in merged_sources:
+                merged_sources.append(s)
         for svc_name, svc in proj.services.items():
             if svc_name not in merged_services:
                 merged_services[svc_name] = svc
@@ -473,28 +500,81 @@ def _merge_projects(projects: List[Project]) -> Project:
                         deduped.append(v)
                 # Image: later overrides if not None
                 merged_image = svc.image if svc.image is not None else existing.image
+                # depends_on: union, sorted for determinism
+                merged_dep = tuple(sorted(set(existing.depends_on) | set(svc.depends_on)))
+                # source_file: latest writer wins (best-effort provenance)
+                merged_src = svc.source_file or existing.source_file
                 merged_services[svc_name] = Service(
-                    name=svc_name, environment=merged_env, volumes=deduped, image=merged_image
+                    name=svc_name, environment=merged_env, volumes=deduped, image=merged_image,
+                    depends_on=merged_dep, source_file=merged_src,
                 )
-    return Project(services=merged_services)
+    return Project(services=merged_services, sources=tuple(sorted(set(merged_sources))))
+
+
+def _parse_services(
+    data: Dict[str, Any],
+    env_vars: Dict[str, str],
+    compose_dir: Path,
+    source_label: Optional[str] = None,
+) -> Dict[str, Service]:
+    """Shared service normalization for file/string/JSON inputs (same semantics)."""
+    services_raw = data.get("services", {})
+    if services_raw is None:
+        services_raw = {}
+    if not isinstance(services_raw, dict):
+        raise ValueError(f"'services' must be a mapping, got {type(services_raw)}")
+
+    services: Dict[str, Service] = {}
+    for svc_name, svc_data in services_raw.items():
+        if svc_data is None:
+            svc_data = {}
+        if not isinstance(svc_data, dict):
+            raise ValueError(f"Service {svc_name} must be a mapping")
+
+        raw_env = svc_data.get("environment")
+        raw_env_file = svc_data.get("env_file")
+        raw_volumes = svc_data.get("volumes")
+        raw_image = svc_data.get("image")
+        raw_depends = svc_data.get("depends_on")
+
+        # Priority 1: load env_file (string or list) and merge; explicit env overrides
+        env_from_files = _load_service_env_files(raw_env_file, compose_dir)
+        env_explicit = normalize_environment(raw_env, env_vars)
+        # env_file as base, explicit environment wins (Docker spec)
+        merged_env: Dict[str, Optional[str]] = dict(env_from_files)  # type: ignore[assignment]
+        merged_env.update(env_explicit)
+        env = merged_env
+        volumes = normalize_volumes(raw_volumes, env_vars)
+        image = str(raw_image) if raw_image is not None else None
+
+        services[str(svc_name)] = Service(
+            name=str(svc_name),
+            environment=env,
+            volumes=volumes,
+            image=image,
+            depends_on=normalize_depends_on(raw_depends),
+            source_file=source_label,
+        )
+    return services
 
 
 def parse_compose_file(
     compose_path: Union[Path, str, List[Union[Path, str]]],
     env_path: Optional[Union[Path, str]] = None,
 ) -> Project:
-    """Parse a docker-compose file and optional .env into a normalized Project.
+    """Parse a Compose file (YAML or equivalent JSON) and optional .env into a Project.
 
-    compose_path: path to docker-compose.yml, or list of paths for
-        ``docker compose -f file1 -f file2`` style merging.
+    compose_path: path to docker-compose.yml (or .yaml/.json variants), or list
+        of paths for ``docker compose -f file1 -f file2`` style merging.
     env_path: path to .env file. If None, looks for .env next to compose file.
 
-    Priority 1 in this update: per-service ``env_file`` (string or list) is
-    loaded via ``load_env_file`` and merged into the service's environment,
-    with explicit ``environment:`` keys overriding ``env_file:`` keys (Docker spec).
+    Priority 1: per-service ``env_file`` (string or list) is loaded via
+    ``load_env_file`` and merged into the service's environment, with explicit
+    ``environment:`` keys overriding ``env_file:`` keys (Docker spec).
 
     Priority 2: when ``compose_path`` is a list, files are parsed sequentially
-    and deep-merged: env dicts updated, volume lists appended/unioned.
+    and deep-merged: env dicts updated, volume lists appended/unioned,
+    depends_on unioned, image latest-wins. Unresolved ${VAR} preserved.
     """
     # --- Multi-file merging (priority 2) ---
     if isinstance(compose_path, list):
@@ -521,42 +601,9 @@ def parse_compose_file(
 
     env_vars = load_env_file(env_path) if env_path else {}  # type: ignore[arg-type]
 
-    services_raw = data.get("services", {})
-    if services_raw is None:
-        services_raw = {}
-    if not isinstance(services_raw, dict):
-        raise ValueError(f"'services' must be a mapping, got {type(services_raw)}")
+    services = _parse_services(data, env_vars, compose_path.parent, source_label=compose_path.name)
 
-    services: Dict[str, Service] = {}
-    for svc_name, svc_data in services_raw.items():
-        if svc_data is None:
-            svc_data = {}
-        if not isinstance(svc_data, dict):
-            raise ValueError(f"Service {svc_name} must be a mapping")
-
-        raw_env = svc_data.get("environment")
-        raw_env_file = svc_data.get("env_file")
-        raw_volumes = svc_data.get("volumes")
-        raw_image = svc_data.get("image")
-
-        # Priority 1: load env_file (string or list) and merge; explicit env overrides
-        env_from_files = _load_service_env_files(raw_env_file, compose_path.parent)
-        env_explicit = normalize_environment(raw_env, env_vars)
-        # env_file as base, explicit environment wins (Docker spec)
-        merged_env: Dict[str, Optional[str]] = dict(env_from_files)  # type: ignore[assignment]
-        merged_env.update(env_explicit)
-        env = merged_env
-        volumes = normalize_volumes(raw_volumes, env_vars)
-        image = str(raw_image) if raw_image is not None else None
-
-        services[str(svc_name)] = Service(
-            name=str(svc_name),
-            environment=env,
-            volumes=volumes,
-            image=image,
-        )
-
-    return Project(services=services)
+    return Project(services=services, sources=(compose_path.name,))
 
 
 # Backward-compatible alias
@@ -567,20 +614,20 @@ def parse_compose_string(
     yaml_content: str,
     env_vars: Optional[Dict[str, str]] = None,
 ) -> Project:
-    """Parse compose YAML from string (useful for tests) with optional env_vars dict."""
+    """Parse compose YAML (or JSON text) from string with optional env_vars dict.
+
+    Accepts YAML text or equivalent JSON text (same Compose model, same semantics).
+    """
     if env_vars is None:
         env_vars = {}
-    data = yaml.safe_load(yaml_content) or {}
-    services_raw = data.get("services", {}) or {}
-    services: Dict[str, Service] = {}
-    for svc_name, svc_data in services_raw.items():
-        if svc_data is None:
-            svc_data = {}
-        raw_env = svc_data.get("environment")
-        raw_volumes = svc_data.get("volumes")
-        raw_image = svc_data.get("image")
-        env = normalize_environment(raw_env, env_vars)
-        volumes = normalize_volumes(raw_volumes, env_vars)
-        image = str(raw_image) if raw_image is not None else None
-        services[str(svc_name)] = Service(name=str(svc_name), environment=env, volumes=volumes, image=image)
-    return Project(services=services)
+    text = yaml_content.strip()
+    if text.startswith("{"):
+        import json as _json
+        try:
+            data = _json.loads(yaml_content) or {}
+        except _json.JSONDecodeError:
+            data = yaml.safe_load(yaml_content) or {}
+    else:
+        data = yaml.safe_load(yaml_content) or {}
+    services = _parse_services(data, env_vars, Path("."), source_label="<string>")
+    return Project(services=services, sources=("<string>",))

@@ -27,6 +27,11 @@ from .coupling import CouplingModel
 from .discovery import discover_candidates
 from .filtering import build_evidence_packages
 from .graph import build_graph_from_groups
+from .inputs import (
+    SUPPORTED_COMPOSE_FILENAMES,
+    discover_compose_files,
+    find_compose_file,
+)
 from .parser import parse_compose_file
 from .report import build_grouped_report
 
@@ -410,14 +415,8 @@ def _versioned_path(base: Path) -> Path:
 
 
 def _discover_compose_sources(repo: Path) -> list[Path]:
-    """Discover all compose files under repo (for accounting)."""
-    found: list[Path] = []
-    for name in ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]:
-        found.extend(repo.rglob(name))
-    # Also check top-level directly (rglob already covers)
-    # Deduplicate and sort for determinism
-    uniq = sorted({p.resolve() for p in found})
-    return uniq
+    """Discover all compose files under repo (for accounting). Delegates to inputs adapter."""
+    return discover_compose_files(repo)
 
 
 def _relative_to_root(path: Path, root: Path) -> str:
@@ -432,29 +431,8 @@ def _relative_to_root(path: Path, root: Path) -> str:
 
 
 def find_compose(repo: Path, compose_arg: Optional[str]) -> Optional[Path]:
-    if compose_arg:
-        p = Path(compose_arg)
-        if not p.is_absolute():
-            cand = repo / p
-            if cand.exists():
-                return cand
-            if p.exists():
-                return p
-        return p if p.exists() else None
-    # Prefer top-level files first; only rglob once if not found at top level
-    for name in ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]:
-        cand = repo / name
-        if cand.exists():
-            return cand
-    # Fallback: search recursively (single scan, shallowest first)
-    candidates: list[Path] = []
-    for name in ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]:
-        candidates.extend(repo.rglob(name))
-    if candidates:
-        # shallowest (fewest parents) first, then lexicographically for determinism
-        candidates.sort(key=lambda p: (len(p.relative_to(repo).parts), str(p)))
-        return candidates[0]
-    return None
+    # Compatibility wrapper around inputs.find_compose_file (same behavior + JSON names).
+    return find_compose_file(repo, compose_arg)
 
 
 def run_one_repo(

@@ -208,6 +208,82 @@ def _resolve_candidate(candidate: Candidate, project: Any) -> Tuple[Optional[str
     Returns: (resolved_service, resolved_image, is_internal, reference_type, volume_targets, ResolutionResult)
     No LLM calls — pure static analysis.
     """
+    # L0 explicit dependency fast path (Stage 2): target is a service name, not a value.
+    if candidate.resource_type == "service_dependency":
+        target = candidate.resource
+        svc = (project.services.get(target) if project and hasattr(project, "services") else None)
+        if svc is not None:
+            rr_dep = ResolutionResult(
+                original_value=target,
+                final_value=target,
+                chain=(),
+                resolution_status=STATUS_INTERNAL,
+                resource_protocol=None,
+                normalized_identity=f"service|{target}",
+                identity_strength="exact",
+                unresolved_vars=(),
+                is_cyclic=False,
+                depth_reached=0,
+                resolved_service=target,
+                resolved_image=getattr(svc, "image", None),
+            )
+            return target, getattr(svc, "image", None), True, "compose_service", None, rr_dep
+        rr_un = ResolutionResult(
+            original_value=target,
+            final_value=target,
+            chain=(),
+            resolution_status=STATUS_UNRESOLVED,
+            resource_protocol=None,
+            normalized_identity=None,
+            identity_strength="unknown",
+            unresolved_vars=(),
+            is_cyclic=False,
+            depth_reached=0,
+        )
+        return None, None, None, "unknown", None, rr_un
+
+    # L1 shared-endpoint fast path (Stage 2): resource is already a normalized identity.
+    if candidate.resource_type == "shared_endpoint":
+        norm = candidate.resource_identity or candidate.resource or ""
+        proto: Optional[str] = None
+        host: Optional[str] = None
+        if "|" in norm:
+            parts = norm.split("|")
+            proto = parts[0] or None
+            host = parts[1] if len(parts) > 1 else None
+        services = getattr(project, "services", {}) if project and hasattr(project, "services") else {}
+        resolved_svc: Optional[str] = None
+        resolved_img: Optional[str] = None
+        if host and host in services:
+            resolved_svc = host
+            resolved_img = getattr(services[host], "image", None)
+            status = STATUS_INTERNAL
+            is_int: Optional[bool] = True
+            ref = "compose_service"
+        elif proto:
+            status = STATUS_EXTERNAL_CONFIRMED
+            is_int = False
+            ref = "external"
+        else:
+            status = STATUS_UNRESOLVED
+            is_int = None
+            ref = "unknown"
+        rr_ep = ResolutionResult(
+            original_value=candidate.value,
+            final_value=candidate.value,
+            chain=(),
+            resolution_status=status,
+            resource_protocol=proto,
+            normalized_identity=norm or None,
+            identity_strength="exact" if norm else "unknown",
+            unresolved_vars=(),
+            is_cyclic=False,
+            depth_reached=0,
+            resolved_service=resolved_svc,
+            resolved_image=resolved_img,
+        )
+        return resolved_svc, resolved_img, is_int, ref, None, rr_ep
+
     # Named volume fast path
     if candidate.resource_type == "named_volume":
         rr_vol: ResolutionResult = bounded_resolve(
@@ -385,6 +461,12 @@ def build_evidence_package(candidate: Candidate, project: Any) -> EvidencePackag
 
 def _decide_with_project(cand: Candidate, project: Any) -> Tuple[bool, str]:
     """Project-aware decide: same as _decide but different-values may be kept if normalized identity converges."""
+    # L0 explicit dependencies are baseline context, never generic noise — always kept.
+    if cand.resource_type == "service_dependency":
+        return True, f"explicit depends_on {cand.service_a!r}->{cand.resource!r} (L0 baseline, not hidden coupling)"
+    # L1 shared endpoints carry a normalized protocol|host|port|db identity — specific, not generic.
+    if cand.resource_type == "shared_endpoint":
+        return True, f"shared normalized endpoint {cand.resource!r} via different variables — specific resource"
     # Fast path for named_volume
     if cand.resource_type == "named_volume":
         return True, "shared named volume — likely coupling"
@@ -500,6 +582,11 @@ def filter_with_reasons(candidates: List[Candidate]) -> List[Tuple[Candidate, bo
 
 
 def _decide(cand: Candidate) -> Tuple[bool, str]:
+    # L0 / L1 new types: kept (explicit context / normalized identity, never generic noise)
+    if cand.resource_type == "service_dependency":
+        return True, f"explicit depends_on {cand.service_a!r}->{cand.resource!r} (L0 baseline)"
+    if cand.resource_type == "shared_endpoint":
+        return True, f"shared normalized endpoint {cand.resource!r} — specific resource"
     # Volumes: keep all named volumes (strong signal)
     if cand.resource_type == "named_volume":
         return True, "shared named volume — likely coupling"

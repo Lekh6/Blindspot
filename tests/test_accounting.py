@@ -227,9 +227,6 @@ services:
 
 
 # Case F — Input source reporting (relative paths)
-<<<<<<< HEAD
-def test_case_f_input_source_reporting():
-=======
 def test_case_f_input_source_reporting(monkeypatch):
     # Hermetic: block the developer's real .env keys so this test never
     # performs live LLM calls (run_one_repo loads .env on purpose in prod).
@@ -237,7 +234,6 @@ def test_case_f_input_source_reporting(monkeypatch):
                 "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("blindspot.cli.load_dotenv", lambda *a, **k: False)
->>>>>>> 8d28c21 (Working tier 1)
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         # Create a compose file
