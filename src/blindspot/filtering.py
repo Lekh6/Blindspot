@@ -30,6 +30,11 @@ from .resolution import (
     STATUS_UNRESOLVED,
     STATUS_PARTIAL,
 )
+from .secrets import redact_value_for_key, redact_mapping, redact_url_credentials, REDACTED
+
+# Evidence schema version — bump on any material structure/meaning change.
+# Cache keys include this so old entries invalidate automatically.
+EVIDENCE_SCHEMA_VERSION = "2"
 
 # Forward import for type hints (avoid circular at runtime we import under TYPE_CHECKING)
 try:
@@ -68,6 +73,19 @@ GENERIC_ENV_KEYS = {
 
 def _is_generic_key(key: str) -> bool:
     return key.upper() in GENERIC_ENV_KEYS
+
+
+def _is_secret_value(key: str, val: str) -> bool:
+    """True when a free-text occurrence must be scrubbed (secret key or URL creds)."""
+    try:
+        from .secrets import is_secret_key as _iss
+
+        if _iss(key):
+            return True
+    except Exception:
+        pass
+    # URL-embedded credentials always scrubbed regardless of key name.
+    return "@" in val and "://" in val
 
 
 # ---------------------------------------------------------------------------
@@ -132,14 +150,71 @@ class EvidencePackage:
     interpolation_source: Optional[str] = None  # e.g. "${DB_HOST}" origin
     env_file_origin: Optional[str] = None  # e.g. "common.env" origin
 
+    # Stage 3+4 contract additions (backward-compatible defaults):
+    schema_version: str = EVIDENCE_SCHEMA_VERSION
+    candidate_id: str = ""  # stable Stage-2 candidate ID, preserved through pipeline
+    raw_value: Optional[str] = None  # raw configured value before resolution (may equal value)
+    provenance: Optional[str] = None  # originating Compose file label (best-effort)
+    evidence_refs: Tuple[str, ...] = field(default_factory=tuple)  # stable refs LLM can cite
+    missing_info: Tuple[str, ...] = field(default_factory=tuple)  # explicit uncertainty list
+    filter_rule: str = ""  # deterministic rule that kept this candidate
+    filter_reason: str = ""  # human-readable keep reason
+
+    def _redacted_chain(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for step in self.resolution_chain:
+            if isinstance(step, dict):
+                s = dict(step)
+                # Redact from/to values that may embed credentials.
+                if isinstance(s.get("from_value"), str):
+                    s["from_value"] = redact_url_credentials(s["from_value"])
+                if isinstance(s.get("to_value"), str):
+                    s["to_value"] = redact_url_credentials(s["to_value"])
+                out.append(s)
+            else:
+                out.append(step)  # type: ignore
+        # Scrub plain secret values when this package's resource is secret-keyed.
+        try:
+            from .secrets import is_secret_key as _iss
+
+            if _iss(self.resource):
+                for secret_val in (self.value, self.raw_value, self.final_value, self.original_value):
+                    if secret_val and isinstance(secret_val, str) and len(secret_val) >= 4:
+                        for s in out:
+                            for k in ("from_value", "to_value"):
+                                if isinstance(s.get(k), str) and secret_val in s[k]:
+                                    s[k] = s[k].replace(secret_val, REDACTED)
+        except Exception:
+            pass
+        return out
+
     def to_dict(self) -> Dict[str, Any]:
+        """Secret-safe serialization (default for reports/cache/prompts).
+
+        Secret-keyed values are redacted; URL userinfo is stripped.
+        Free-text evidence/reason strings are also scrubbed of credentials.
+        Raw in-memory values are never serialized verbatim when sensitive.
+        Deterministic key order is enforced by callers via sort_keys.
+        """
+        red_evidence = redact_url_credentials(self.evidence) or ""
+        red_reason = redact_url_credentials(self.filter_reason) or ""
+        # Scrub whole secret values that appear inside free text.
+        for key, val in ((self.resource, self.value), (self.resource, self.raw_value)):
+            if val and isinstance(val, str) and len(val) >= 4:
+                if key and val in red_evidence and _is_secret_value(key, val):
+                    red_evidence = red_evidence.replace(val, REDACTED)
+                if key and val in red_reason and _is_secret_value(key, val):
+                    red_reason = red_reason.replace(val, REDACTED)
         return {
+            "schema_version": self.schema_version,
+            "candidate_id": self.candidate_id,
             "service_a": self.service_a,
             "service_b": self.service_b,
             "resource": self.resource,
             "resource_type": self.resource_type,
-            "value": self.value,
-            "evidence": self.evidence,
+            "value": redact_value_for_key(self.resource, self.value),
+            "raw_value": redact_value_for_key(self.resource, self.raw_value),
+            "evidence": red_evidence,
             "resolved_service": self.resolved_service,
             "resolved_image": self.resolved_image,
             "is_internal": self.is_internal,
@@ -148,13 +223,15 @@ class EvidencePackage:
             "resource_protocol": self.resource_protocol,
             "normalized_identity": self.normalized_identity,
             "identity_strength": self.identity_strength,
-            "resolution_chain": list(self.resolution_chain),
-            "final_value": self.final_value,
-            "original_value": self.original_value,
+            "resolution_chain": self._redacted_chain(),
+            "final_value": redact_value_for_key(self.resource, redact_url_credentials(self.final_value)),
+            "original_value": redact_value_for_key(self.resource, redact_url_credentials(self.original_value)),
             "unresolved_vars": list(self.unresolved_vars),
             "is_cyclic": self.is_cyclic,
             "depth_reached": self.depth_reached,
-            "related_config": {k: dict(v) for k, v in self.related_config.items()},
+            "related_config": {
+                k: redact_mapping(v) for k, v in sorted(self.related_config.items())
+            },
             "filtering_signals": {
                 "generic_variable": self.generic_variable,
                 "same_value": self.same_value,
@@ -164,18 +241,35 @@ class EvidencePackage:
                 "identity_strength": self.identity_strength,
             },
             "volume_targets": dict(self.volume_targets) if self.volume_targets else None,
+            "provenance": self.provenance,
+            "evidence_refs": list(self.evidence_refs),
+            "missing_info": list(self.missing_info),
+            "filter_rule": self.filter_rule,
+            "filter_reason": red_reason,
         }
 
+    def to_canonical_json(self) -> str:
+        """Deterministic JSON independent of iteration order/timestamps."""
+        import json as _json
+
+        return _json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
     def cache_key_dict(self) -> Dict[str, Any]:
-        """Deterministic dict used for cache.json key generation — candidate + relevant evidence."""
+        """Deterministic dict used for cache.json key generation — candidate + relevant evidence.
+
+        Secret-safe: uses redacted values so cache keys never contain secrets.
+        Includes schema_version so structure changes invalidate entries.
+        """
         # Include all fields that materially change meaning if evidence changes
         return {
+            "schema_version": self.schema_version,
+            "candidate_id": self.candidate_id,
             "service_a": self.service_a,
             "service_b": self.service_b,
             "resource": self.resource,
             "resource_type": self.resource_type,
-            "value": self.value,
-            "final_value": self.final_value,
+            "value": redact_value_for_key(self.resource, self.value),
+            "final_value": redact_value_for_key(self.resource, redact_url_credentials(self.final_value)),
             "resolved_service": self.resolved_service,
             "resolved_image": self.resolved_image,
             "is_internal": self.is_internal,
@@ -185,7 +279,10 @@ class EvidencePackage:
             "normalized_identity": self.normalized_identity,
             "identity_strength": self.identity_strength,
             "unresolved_vars": list(self.unresolved_vars),
-            "related_config": {k: dict(sorted(v.items())) for k, v in sorted(self.related_config.items())},
+            "related_config": {
+                k: redact_mapping(dict(sorted(v.items())))
+                for k, v in sorted(self.related_config.items())
+            },
             "generic_variable": self.generic_variable,
             "same_value": self.same_value,
         }
@@ -422,13 +519,60 @@ def build_evidence_package(candidate: Candidate, project: Any) -> EvidencePackag
     """Build one bounded evidence package for a surviving candidate.
 
     Deterministically resolves what the value points to via bounded_resolve, collects related config,
-    and captures filtering signals. No LLM calls.
+    and captures filtering signals. No LLM calls. No confidence scoring.
+    Populates stable candidate_id, provenance, evidence refs, and uncertainty.
     """
     resolved_service, resolved_image, is_internal, reference_type, volume_targets, rr = _resolve_candidate(candidate, project)
     related_config = _collect_related_config(candidate, project)
     generic = _is_generic_key(candidate.resource) if candidate.resource_type == "env_var" else False
     same = candidate.value is not None
     diff = "different values" in candidate.evidence
+
+    # Provenance: prefer candidate provenance, else project sources.
+    prov = getattr(candidate, "provenance", None)
+    if not prov and project is not None and hasattr(project, "sources"):
+        try:
+            srcs = sorted(project.sources)
+            prov = srcs[0] if srcs else None
+        except Exception:
+            prov = None
+
+    # Stable evidence refs the LLM can cite: candidate + resolution + related.
+    base_ref = getattr(candidate, "candidate_id", "") or ""
+    refs = []
+    if base_ref:
+        refs.append(f"candidate:{base_ref}")
+    refs.append(f"evidence:{candidate.service_a}/{candidate.service_b}/{candidate.resource_type}/{candidate.resource}")
+    if rr.normalized_identity:
+        refs.append(f"identity:{rr.normalized_identity}")
+    if rr.resolved_service:
+        refs.append(f"service:{rr.resolved_service}")
+
+    # Missing info / uncertainty: explicit, never silent.
+    missing: List[str] = []
+    if rr.unresolved_vars:
+        missing.append(f"unresolved vars: {', '.join(sorted(rr.unresolved_vars))}")
+    if rr.resolution_status in (STATUS_UNRESOLVED, STATUS_PARTIAL):
+        missing.append(f"resolution {rr.resolution_status} (strength {rr.identity_strength})")
+    if rr.is_cyclic:
+        missing.append("resolution cycle detected")
+    if reference_type == "unknown":
+        missing.append("reference type unknown")
+
+    keep, reason = _decide_with_project(candidate, project)
+    # Derive stable rule id from reason prefix.
+    if "explicit depends_on" in reason:
+        rule = "keep-explicit-l0"
+    elif "shared normalized endpoint" in reason:
+        rule = "keep-shared-endpoint"
+    elif "named volume" in reason:
+        rule = "keep-named-volume"
+    elif "same normalized identity" in reason or "same resolved final" in reason:
+        rule = "keep-converged-identity"
+    elif "specific config" in reason:
+        rule = "keep-specific-config"
+    else:
+        rule = "keep-conservative"
 
     return EvidencePackage(
         service_a=candidate.service_a,
@@ -456,6 +600,14 @@ def build_evidence_package(candidate: Candidate, project: Any) -> EvidencePackag
         same_value=same,
         different_values=diff,
         volume_targets=volume_targets,
+        schema_version=EVIDENCE_SCHEMA_VERSION,
+        candidate_id=base_ref,
+        raw_value=candidate.value,
+        provenance=prov,
+        evidence_refs=tuple(refs),
+        missing_info=tuple(sorted(missing)),
+        filter_rule=rule,
+        filter_reason=reason,
     )
 
 
@@ -505,6 +657,7 @@ def build_evidence_packages(candidates: List[Candidate], project: Any) -> List[E
     This is the Stage 3 combined entry point: deterministic filtering + evidence construction.
     Returns evidence packages sorted deterministically (same key as discovery).
     Uses project-aware decision so different raw values that normalize to same physical resource are kept.
+    Filtering produces selection only — never a confidence score or final decision.
     """
     # Project-aware filtering: keep if _decide_with_project says keep
     kept: List[Candidate] = []
@@ -525,6 +678,115 @@ def build_evidence_packages(candidates: List[Candidate], project: Any) -> List[E
         packages.append(pkg)
     packages.sort(key=lambda p: (p.service_a, p.service_b, p.resource_type, p.resource))
     return packages
+
+
+@dataclass(frozen=True)
+class FilterDecision:
+    """Auditable filtering outcome for one candidate (kept or rejected).
+
+    Rejected candidates are recorded with rule + reason and original
+    evidence preserved — never silently discarded.
+    """
+
+    candidate_id: str
+    service_a: str
+    service_b: str
+    resource: str
+    resource_type: str
+    kept: bool
+    rule: str
+    reason: str
+    original_evidence: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "candidate_id": self.candidate_id,
+            "service_a": self.service_a,
+            "service_b": self.service_b,
+            "resource": self.resource,
+            "resource_type": self.resource_type,
+            "kept": self.kept,
+            "rule": self.rule,
+            "reason": self.reason,
+            "original_evidence": self.original_evidence,
+        }
+
+
+def _rule_for_rejection(reason: str) -> str:
+    if "different values" in reason:
+        return "drop-different-values"
+    if "generic key" in reason:
+        return "drop-generic-key"
+    return "drop-other"
+
+
+def filter_with_decisions(candidates: List[Candidate], project: Any) -> List[FilterDecision]:
+    """Record deterministic filtering decision + reason for every candidate.
+
+    Unresolved candidates are kept (uncertainty preserved), never silently lost.
+    Returns decisions sorted deterministically.
+    """
+    out: List[FilterDecision] = []
+    for cand in sorted(candidates, key=lambda c: (c.service_a, c.service_b, c.resource_type, c.resource)):
+        keep, reason = _decide_with_project(cand, project)
+        if keep:
+            # Mirror rule derivation in build_evidence_package.
+            if "explicit depends_on" in reason:
+                rule = "keep-explicit-l0"
+            elif "shared normalized endpoint" in reason:
+                rule = "keep-shared-endpoint"
+            elif "named volume" in reason:
+                rule = "keep-named-volume"
+            elif "same normalized identity" in reason or "same resolved final" in reason:
+                rule = "keep-converged-identity"
+            elif "specific config" in reason or "no value" in reason:
+                rule = "keep-specific-config"
+            else:
+                rule = "keep-conservative"
+        else:
+            rule = _rule_for_rejection(reason)
+        out.append(
+            FilterDecision(
+                candidate_id=getattr(cand, "candidate_id", ""),
+                service_a=cand.service_a,
+                service_b=cand.service_b,
+                resource=cand.resource,
+                resource_type=cand.resource_type,
+                kept=keep,
+                rule=rule,
+                reason=reason,
+                original_evidence=cand.evidence,
+            )
+        )
+    return out
+
+
+def server_identity(normalized_identity: Optional[str]) -> Optional[str]:
+    """Extract server-level identity (protocol|host|port) from a full identity.
+
+    Two services sharing a server but different logical DBs share server
+    identity but NOT logical identity — callers must not conflate them.
+    """
+    if not normalized_identity or normalized_identity.startswith("named_volume|"):
+        return None
+    if normalized_identity.startswith("service|"):
+        return normalized_identity
+    parts = normalized_identity.split("|")
+    if len(parts) >= 3:
+        return "|".join(parts[:3])
+    return None
+
+
+def logical_identity(normalized_identity: Optional[str]) -> Optional[str]:
+    """Full logical identity including database (protocol|host|port|db)."""
+    if not normalized_identity:
+        return None
+    if normalized_identity.startswith(("named_volume|", "service|")):
+        return normalized_identity
+    parts = normalized_identity.split("|")
+    if len(parts) >= 4:
+        return normalized_identity
+    return normalized_identity
 
 
 def filter_and_build_evidence(candidates: List[Candidate], project: Any) -> Tuple[List[Candidate], List[EvidencePackage]]:

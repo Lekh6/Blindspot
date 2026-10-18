@@ -23,6 +23,7 @@ def _grouping_key(pkg: EvidencePackage) -> str:
     Preserves type/protocol distinctions via normalized content itself (e.g. postgresql|host|port|db vs named_volume|...).
     For partial/config with same template, same placeholder normalized groups together.
     Fallback for unknown (normalized is None): raw resource_type + resource + final_value/value to avoid over-merging.
+    Secret-safe: secret values contribute a stable hash, never plaintext.
     """
     if pkg.normalized_identity is not None:
         # Include resource_type prefix to keep env_var vs named_volume distinct if same string collision
@@ -31,6 +32,19 @@ def _grouping_key(pkg: EvidencePackage) -> str:
     # Unknown — do not broadly merge. Use raw identity.
     raw_val = pkg.final_value if pkg.final_value is not None else pkg.value
     # Include resource name to keep DB_HOST vs DB_NAME separate when both unresolved
+    if raw_val is None:
+        return f"raw:{pkg.resource_type}:{pkg.resource}:None"
+    try:
+        from .secrets import is_secret_key as _iss, redact_url_credentials as _ruc
+
+        red = _ruc(raw_val) or ""
+        if _iss(pkg.resource) or red != raw_val:
+            import hashlib as _hl
+
+            digest = _hl.sha256(str(raw_val).encode()).hexdigest()[:12]
+            return f"raw:{pkg.resource_type}:{pkg.resource}:sha256:{digest}"
+    except Exception:
+        pass
     return f"raw:{pkg.resource_type}:{pkg.resource}:{raw_val}"
 
 
@@ -169,32 +183,65 @@ def aggregate_evidence_packages(packages: List[EvidencePackage]) -> List[Grouped
 
         # Resource identity: use the group's key's normalized part or fallback
         # For grouped key with prefix, strip prefix for identity
+        # Secret-safe fallback: never embed secret plaintext in identity.
         if obs_list[0].normalized_identity is not None:
             resource_identity = obs_list[0].normalized_identity
         else:
-            # fallback raw identity: use grouping key's raw part
-            # Reconstruct from first obs
-            raw_val = obs_list[0].final_value if obs_list[0].final_value is not None else obs_list[0].value
-            resource_identity = f"{obs_list[0].resource}={raw_val}" if raw_val else obs_list[0].resource
+            try:
+                from .secrets import (
+                    is_secret_key as _iss2,
+                    redact_url_credentials as _ruc2,
+                    redact_value_for_key as _rvk,
+                )
 
-        # Representative chain: choose the longest chain? Or first with chain? Keep first sorted obs with non-empty chain
+                raw_val2 = obs_list[0].final_value if obs_list[0].final_value is not None else obs_list[0].value
+                red2 = _rvk(obs_list[0].resource, _ruc2(raw_val2))
+                resource_identity = f"{obs_list[0].resource}={red2}" if red2 else obs_list[0].resource
+            except Exception:
+                raw_val = obs_list[0].final_value if obs_list[0].final_value is not None else obs_list[0].value
+                resource_identity = f"{obs_list[0].resource}={raw_val}" if raw_val else obs_list[0].resource
+
+        # Representative chain: secret-safe (redact URL creds + secret values).
         rep_chain: Tuple[Dict[str, Any], ...] = ()
         for pkg in sorted(obs_list, key=lambda p: len(p.resolution_chain), reverse=True):
             if pkg.resolution_chain:
-                rep_chain = pkg.resolution_chain
+                try:
+                    from .secrets import redact_url_credentials as _ruc3
+
+                    cleaned = []
+                    for step in pkg.resolution_chain:
+                        s = dict(step) if isinstance(step, dict) else step
+                        if isinstance(s, dict):
+                            if isinstance(s.get("from_value"), str):
+                                s["from_value"] = _ruc3(s["from_value"])
+                            if isinstance(s.get("to_value"), str):
+                                s["to_value"] = _ruc3(s["to_value"])
+                        cleaned.append(s)
+                    rep_chain = tuple(cleaned)
+                except Exception:
+                    rep_chain = pkg.resolution_chain
                 break
         else:
-            rep_chain = obs_list[0].resolution_chain if obs_list else ()
+            try:
+                from .secrets import redact_url_credentials as _ruc4
 
-        # Bounded: cap observations stored? Already bounded via filtering; but ensure we don't exceed large counts
-        # Keep all observations but they are already bounded (max candidates pairwise). For Cal.com 6 obs, fine.
-        # For safety, cap at 20, deterministic sorted — warn if truncated
-        if len(obs_list) > 20:
-            import logging
-            logging.getLogger("blindspot.aggregation").warning(
-                "group %s truncated from %d to 20 observations", key, len(obs_list)
-            )
-            obs_list = obs_list[:20]
+                cleaned0 = []
+                for step in (obs_list[0].resolution_chain if obs_list else ()):
+                    s = dict(step) if isinstance(step, dict) else step
+                    if isinstance(s, dict):
+                        if isinstance(s.get("from_value"), str):
+                            s["from_value"] = _ruc4(s["from_value"])
+                        if isinstance(s.get("to_value"), str):
+                            s["to_value"] = _ruc4(s["to_value"])
+                    cleaned0.append(s)
+                rep_chain = tuple(cleaned0)
+            except Exception:
+                rep_chain = obs_list[0].resolution_chain if obs_list else ()
+
+        # Bounded: observations are already bounded pairwise (n*(n-1)/2 * keys).
+        # Never silently truncate — oversized groups split deterministically at
+        # context-construction time (context.split_group_deterministically).
+        # Keep all observations so no candidate is lost.
 
         grouped = GroupedEvidencePackage(
             grouping_key=key,

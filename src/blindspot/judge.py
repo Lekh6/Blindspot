@@ -106,7 +106,37 @@ def build_judge_prompt(package: EvidencePackage) -> str:
     new distinct states and normalized identity), RELATED CONFIGURATION (bounded),
     DETERMINISTIC FILTERING + identity strength signals.
     LLM must return verdict/confidence/reason only.
+    Secret-safe: uses redacted serialization (never raw secrets).
     """
+    # Redact at source: operate on a secret-safe clone so every downstream
+    # formatting (values, related config, chain) cannot leak secrets.
+    try:
+        from dataclasses import replace as _replace
+        from .secrets import redact_value_for_key as _rvk, redact_mapping as _rm, redact_url_credentials as _ruc
+
+        _red_chain = []
+        for _step in (package.resolution_chain or ()):
+            if isinstance(_step, dict):
+                _s = dict(_step)
+                if isinstance(_s.get("from_value"), str):
+                    _s["from_value"] = _ruc(_s["from_value"])
+                if isinstance(_s.get("to_value"), str):
+                    _s["to_value"] = _ruc(_s["to_value"])
+                _red_chain.append(_s)
+            else:
+                _red_chain.append(_step)
+        package = _replace(
+            package,
+            value=_rvk(package.resource, package.value),
+            final_value=_rvk(package.resource, _ruc(package.final_value)),
+            original_value=_rvk(package.resource, _ruc(package.original_value)),
+            related_config={k: _rm(dict(v)) for k, v in sorted(package.related_config.items())} if package.related_config else {},
+            evidence=_ruc(package.evidence) or "",
+            filter_reason=_ruc(getattr(package, "filter_reason", "")) or "",
+            resolution_chain=tuple(_red_chain),
+        )
+    except Exception:
+        pass
     # Related config formatted per service
     related_lines = []
     if package.related_config:

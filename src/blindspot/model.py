@@ -223,6 +223,8 @@ class DependencyModel:
             ev = item["evidence"]
             # Reconstruct EvidencePackage from its to_dict() shape (new resolution fields optional for backward compat)
             # evidence dict has filtering_signals + evidence fields; we need to map back
+            from .filtering import EVIDENCE_SCHEMA_VERSION as _EV
+
             pkg = EvidencePackage(
                 service_a=item["service_a"],
                 service_b=item["service_b"],
@@ -249,6 +251,14 @@ class DependencyModel:
                 same_value=ev.get("filtering_signals", {}).get("same_value", False),
                 different_values=ev.get("filtering_signals", {}).get("different_values", False),
                 volume_targets=ev.get("volume_targets"),
+                schema_version=ev.get("schema_version", _EV),
+                candidate_id=ev.get("candidate_id", ""),
+                raw_value=ev.get("raw_value", item.get("value")),
+                provenance=ev.get("provenance"),
+                evidence_refs=tuple(ev.get("evidence_refs", [])),
+                missing_info=tuple(ev.get("missing_info", [])),
+                filter_rule=ev.get("filter_rule", ""),
+                filter_reason=ev.get("filter_reason", ""),
             )
             deps.append(
                 Dependency(

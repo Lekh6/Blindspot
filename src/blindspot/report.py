@@ -125,13 +125,20 @@ class ReportData:
             lines.append("_No meaningful dependencies found -- all candidates were filtered as generic or judged coincidental/uncertain._")
             return "\n".join(lines)
         for i, f in enumerate(self.findings, 1):
-            # Resource display — prefer normalized_identity for external/internal resources
+            # Resource display — prefer normalized_identity for external/internal resources.
+            # Secret-safe: redact secret-keyed values and URL credentials.
+            try:
+                from .secrets import redact_value_for_key as _rvk, redact_url_credentials as _ruc
+
+                _disp_val = _rvk(f.resource, _ruc(f.value)) if f.value is not None else None
+            except Exception:
+                _disp_val = f.value
             ev = f.evidence
             norm = ev.get("normalized_identity")
             if norm:
                 res_display = norm
             else:
-                res_display = f.resource + (f"={f.value}" if f.value is not None else "")
+                res_display = f.resource + (f"={_disp_val}" if _disp_val is not None else "")
             lines.append(f"## {i}. {f.service_a} <-> {f.service_b} through `{res_display}` ({f.resource_type}) -- confidence {f.confidence:.2f} **{f.verdict}**")
             lines.append("")
             lines.append(f"**Reason:** {f.reason}")
@@ -154,15 +161,15 @@ class ReportData:
                 if norm:
                     lines.append(f"**Normalized:** `{norm}`")
             elif status == "internal":
-                lines.append(f"**Resolution:** `{f.value!r}` -> Compose service `{ev.get('resolved_service')}` (image: {ev.get('resolved_image') or 'unknown'}) -- INTERNAL coupling")
+                lines.append(f"**Resolution:** `{_disp_val!r}` -> Compose service `{ev.get('resolved_service')}` (image: {ev.get('resolved_image') or 'unknown'}) -- INTERNAL coupling")
                 if protocol:
                     lines.append(f"**Protocol:** {protocol}")
                 if norm:
                     lines.append(f"**Normalized:** `{norm}` ({strength})")
-                if final_val and final_val != f.value:
+                if final_val and final_val != _disp_val:
                     lines.append(f"**Final value:** `{final_val}`")
             elif status == "external_confirmed":
-                lines.append(f"**Resolution:** `{f.value!r}` -> `{final_val or f.value}` -- EXTERNAL_CONFIRMED")
+                lines.append(f"**Resolution:** `{_disp_val!r}` -> `{final_val or _disp_val}` -- EXTERNAL_CONFIRMED")
                 if protocol:
                     lines.append(f"**Protocol:** {protocol}")
                 if norm:
@@ -170,7 +177,7 @@ class ReportData:
                 else:
                     lines.append(f"**Identity strength:** {strength}")
             elif status == "partial":
-                lines.append(f"**Resolution:** `{f.value!r}` -> `{final_val or f.value}` -- PARTIAL (unresolved: {', '.join(unresolved) if unresolved else 'none'}, cyclic={is_cyclic})")
+                lines.append(f"**Resolution:** `{_disp_val!r}` -> `{final_val or _disp_val}` -- PARTIAL (unresolved: {', '.join(unresolved) if unresolved else 'none'}, cyclic={is_cyclic})")
                 if protocol:
                     lines.append(f"**Protocol:** {protocol} (partial)")
                 if norm:
@@ -178,7 +185,7 @@ class ReportData:
                 else:
                     lines.append(f"**Identity strength:** {strength} -- same configuration template, physical identity incomplete")
             else:  # unresolved
-                line = f"**Resolution:** `{f.value!r}` -> `{final_val or f.value}` -- UNRESOLVED"
+                line = f"**Resolution:** `{_disp_val!r}` -> `{final_val or _disp_val}` -- UNRESOLVED"
                 if unresolved:
                     line += f" (unresolved vars: {', '.join(unresolved)})"
                 if is_cyclic:
