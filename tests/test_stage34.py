@@ -13,6 +13,7 @@ from blindspot.filtering import (
     filter_with_decisions,
     server_identity,
     logical_identity,
+    EvidencePackage,
 )
 from blindspot.aggregation import aggregate_evidence_packages
 from blindspot.context import (
@@ -29,12 +30,18 @@ from blindspot.context_judge import (
     judge_investigation_context,
     to_legacy_group_result,
     validate_candidate_judgments,
+    CandidateJudgment,
+    JudgmentFailure,
+)
+from blindspot.judge import (
+    judge_contextual,
+    contextual_judgments_to_group_results,
+    JudgeResult,
 )
 from blindspot.secrets import REDACTED
 from blindspot.coupling import CouplingModel
 from blindspot.graph import build_graph_from_groups
 from blindspot.report import build_grouped_report
-from blindspot.judge import JudgeResult
 
 
 def _proj_env():
@@ -370,3 +377,267 @@ def test_no_scoring_static_llm_separate_and_compat():
         assert "confidence" in e["data"] and "model" not in str(e)
     report = build_grouped_report(model, graph_data=graph)
     assert "model" not in json.dumps(report.to_dict()).lower() or "nvidia" not in report.to_json()
+
+
+# ---- Contextual Batching Tests ----
+
+def test_judge_contextual_multiple_candidates_per_context():
+    """Test that judge_contextual processes multiple candidates in one LLM call."""
+    proj = parse_compose_file("fixtures/stage12_levels/docker-compose.yml")
+    pkgs = build_evidence_packages(discover_candidates(proj), proj)
+    grouped = aggregate_evidence_packages(pkgs)
+    assert len(grouped) >= 1
+
+    mock = MockContextClient(verdict="meaningful", confidence=0.85, model="mock-contextual")
+    budget = ContextBudget(max_candidates_per_group=8)
+    contextual_results = judge_contextual(grouped, mock, cache_path=None, budget=budget, thinking="low")
+
+    # Should have results for each grouped package
+    assert len(contextual_results) == len(grouped)
+    total_judgments = 0
+    for gp, judgments, failures in contextual_results:
+        assert gp is not None
+        assert len(judgments) > 0
+        assert len(failures) == 0
+        total_judgments += len(judgments)
+        # Each judgment should have proper structure
+        for j in judgments:
+            assert j.candidate_id
+            assert j.verdict in ("meaningful", "coincidental", "uncertain")
+            assert 0.0 <= j.confidence <= 1.0
+            assert j.reason
+            assert isinstance(j.supporting_evidence, tuple)
+            assert isinstance(j.missing_information, tuple)
+
+    # Total judgments should equal total candidates across all groups
+    total_candidates = sum(len(g.observations) for g in grouped)
+    assert total_judgments == total_candidates
+
+    # Only one LLM call per context (mock tracks calls)
+    assert len(mock.calls) == len(contextual_results)
+
+
+def test_judge_contextual_adaptive_packing_splits_oversized():
+    """Test that oversized groups are split deterministically across contexts."""
+    from blindspot.filtering import EvidencePackage
+    from dataclasses import replace
+
+    # Create many evidence packages that would exceed budget if packed together
+    base_pkgs = [
+        EvidencePackage(
+            service_a=f"svc_a_{i}", service_b=f"svc_b_{i}",
+            resource=f"DB_{i}", resource_type="env_var", value=f"postgresql://host:5432/db{i}",
+            evidence=f"e{i}", candidate_id=f"cid-{i:03d}",
+            normalized_identity=f"postgresql|host|5432|db{i}",
+            resolution_status="external_confirmed", identity_strength="exact",
+            resource_protocol="postgresql",
+        ) for i in range(10)
+    ]
+    # Force them into one group by giving same grouping key (same normalized_identity)
+    pkgs = [
+        replace(
+            p,
+            normalized_identity="postgresql|host|5432|shared_db",
+            resource="SHARED_DB",
+            value="postgresql://host:5432/shared_db",
+            resource_protocol="postgresql",
+            identity_strength="exact",
+            resolution_status="external_confirmed",
+        ) for p in base_pkgs
+    ]
+
+    grouped = aggregate_evidence_packages(pkgs)
+    assert len(grouped) == 1  # All merged into one group
+
+    # Use tiny budget to force splitting
+    tiny_budget = ContextBudget(max_candidates_per_group=3, max_serialized_chars=10000, max_estimated_tokens=10000)
+    mock = MockContextClient(verdict="meaningful", confidence=0.8, model="mock-packing")
+
+    contextual_results = judge_contextual(grouped, mock, cache_path=None, budget=tiny_budget, thinking="low")
+
+    # Should be split into multiple contexts (ceil(10/3) = 4 contexts)
+    assert len(contextual_results) >= 3  # At least 3 contexts for 10 candidates with max 3 per group
+    # Total judgments should still equal total candidates
+    total_judgments = sum(len(j) for _, j, _ in contextual_results)
+    assert total_judgments == 10
+
+    # Each context should have <= max_candidates_per_group candidates
+    for _, judgments, _ in contextual_results:
+        assert len(judgments) <= 3
+
+
+def test_judge_contextual_cache_candidate_aware():
+    """Test that cache keys include all candidates and context, so changes invalidate."""
+    import tempfile
+    from pathlib import Path
+
+    proj = parse_compose_file("fixtures/stage12_levels/docker-compose.yml")
+    pkgs = build_evidence_packages(discover_candidates(proj), proj)
+    grouped = aggregate_evidence_packages(pkgs)
+    assert len(grouped) >= 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = str(Path(tmp) / "cache.json")
+        mock = MockContextClient(verdict="meaningful", confidence=0.8, model="mock-cache-v1")
+        budget = ContextBudget()
+
+        # First call - should hit LLM
+        results1 = judge_contextual(grouped, mock, cache_path=cache, budget=budget, thinking="low")
+        calls_after_first = len(mock.calls)
+
+        # Second call - should hit cache (no new LLM calls)
+        results2 = judge_contextual(grouped, mock, cache_path=cache, budget=budget, thinking="low")
+        calls_after_second = len(mock.calls)
+        assert calls_after_second == calls_after_first  # Cache hit
+
+        # Verify results are identical
+        for (gp1, j1, f1), (gp2, j2, f2) in zip(results1, results2):
+            assert [j.to_dict() for j in j1] == [j.to_dict() for j in j2]
+
+        # Model change should invalidate cache
+        mock2 = MockContextClient(verdict="meaningful", confidence=0.8, model="mock-cache-v2")
+        results3 = judge_contextual(grouped, mock2, cache_path=cache, budget=budget, thinking="low")
+        assert len(mock2.calls) == len(grouped)  # New calls for new model
+
+        # Evidence change (different grouping) should invalidate
+        # Create a slightly different project
+        proj_b = parse_compose_string("""
+services:
+  a: { environment: { DATABASE_URL: "postgresql://other:5432/db" } }
+  b: { environment: { DATABASE_URL: "postgresql://other:5432/db" } }
+""")
+        pkgs_b = build_evidence_packages(discover_candidates(proj_b), proj_b)
+        grouped_b = aggregate_evidence_packages(pkgs_b)
+        mock3 = MockContextClient(verdict="meaningful", confidence=0.8, model="mock-cache-v1")
+        results4 = judge_contextual(grouped_b, mock3, cache_path=cache, budget=budget, thinking="low")
+        assert len(mock3.calls) == len(grouped_b)  # New calls for different evidence
+
+
+def test_contextual_judgments_to_group_results_conversion():
+    """Test conversion from per-candidate judgments to grouped JudgeResult."""
+    from blindspot.context_judge import CandidateJudgment
+    from blindspot.aggregation import GroupedEvidencePackage
+    from blindspot.filtering import EvidencePackage
+
+    # Create a grouped package with multiple observations
+    obs = [
+        EvidencePackage(service_a="a", service_b="b", resource="DB_URL", resource_type="env_var",
+                        value="postgresql://host:5432/db", evidence="e", candidate_id="cid-1",
+                        normalized_identity="postgresql|host|5432|db", resolution_status="external_confirmed",
+                        identity_strength="exact", resource_protocol="postgresql"),
+        EvidencePackage(service_a="a", service_b="c", resource="DB_URL", resource_type="env_var",
+                        value="postgresql://host:5432/db", evidence="e", candidate_id="cid-2",
+                        normalized_identity="postgresql|host|5432|db", resolution_status="external_confirmed",
+                        identity_strength="exact", resource_protocol="postgresql"),
+    ]
+    gp = GroupedEvidencePackage(
+        grouping_key="env_var:postgresql|host|5432|db",
+        resource_identity="postgresql|host|5432|db",
+        resource_protocol="postgresql",
+        resource_type="env_var",
+        resolution_status="external_confirmed",
+        identity_strength="exact",
+        services=("a", "b", "c"),
+        observations=tuple(obs),
+        configuration_evidence={"a": ("DB_URL",), "b": ("DB_URL",), "c": ("DB_URL",)},
+        unresolved_vars=(),
+        representative_chain=(),
+        evidence_count=2,
+        service_count=3,
+        observation_resources=("DB_URL",),
+    )
+
+    # All meaningful -> group result meaningful
+    judgments = [
+        CandidateJudgment(candidate_id="cid-1", verdict="meaningful", confidence=0.9, reason="r1",
+                          supporting_evidence=("candidate:cid-1",), missing_information=(), model="mock"),
+        CandidateJudgment(candidate_id="cid-2", verdict="meaningful", confidence=0.85, reason="r2",
+                          supporting_evidence=("candidate:cid-2",), missing_information=(), model="mock"),
+    ]
+    contextual_results = [(gp, judgments, [])]
+    group_results = contextual_judgments_to_group_results(contextual_results)
+    assert len(group_results) == 1
+    gp_result, jr = group_results[0]
+    assert jr.verdict == "meaningful"
+    assert 0.85 <= jr.confidence <= 0.9  # max of winners
+
+    # Mixed: meaningful + uncertain -> meaningful wins
+    judgments2 = [
+        CandidateJudgment(candidate_id="cid-1", verdict="meaningful", confidence=0.7, reason="r1",
+                          supporting_evidence=("candidate:cid-1",), missing_information=(), model="mock"),
+        CandidateJudgment(candidate_id="cid-2", verdict="uncertain", confidence=0.4, reason="r2",
+                          supporting_evidence=("candidate:cid-2",), missing_information=(), model="mock"),
+    ]
+    group_results2 = contextual_judgments_to_group_results([(gp, judgments2, [])])
+    assert group_results2[0][1].verdict == "meaningful"
+
+    # Uncertain + coincidental -> uncertain wins over coincidental
+    judgments3 = [
+        CandidateJudgment(candidate_id="cid-1", verdict="uncertain", confidence=0.4, reason="r1",
+                          supporting_evidence=("candidate:cid-1",), missing_information=(), model="mock"),
+        CandidateJudgment(candidate_id="cid-2", verdict="coincidental", confidence=0.6, reason="r2",
+                          supporting_evidence=("candidate:cid-2",), missing_information=(), model="mock"),
+    ]
+    group_results3 = contextual_judgments_to_group_results([(gp, judgments3, [])])
+    assert group_results3[0][1].verdict == "uncertain"
+
+    # Failures become uncertain
+    from blindspot.context_judge import JudgmentFailure
+    judgments4 = [
+        CandidateJudgment(candidate_id="cid-1", verdict="meaningful", confidence=0.9, reason="r1",
+                          supporting_evidence=("candidate:cid-1",), missing_information=(), model="mock"),
+    ]
+    failures = [JudgmentFailure(candidate_id="cid-2", error_type="provider_error", message="timeout")]
+    group_results4 = contextual_judgments_to_group_results([(gp, judgments4, failures)])
+    assert group_results4[0][1].verdict == "meaningful"  # meaningful wins over failure->uncertain
+
+
+def test_coupling_model_from_contextual_judgments():
+    """Test CouplingModel.from_contextual_judgments builds correct groups."""
+    from blindspot.context_judge import CandidateJudgment
+    from blindspot.aggregation import GroupedEvidencePackage
+    from blindspot.filtering import EvidencePackage
+
+    obs = [
+        EvidencePackage(service_a="a", service_b="b", resource="DB_URL", resource_type="env_var",
+                        value="postgresql://host:5432/db", evidence="e", candidate_id="cid-1",
+                        normalized_identity="postgresql|host|5432|db", resolution_status="external_confirmed",
+                        identity_strength="exact", resource_protocol="postgresql"),
+    ]
+    gp = GroupedEvidencePackage(
+        grouping_key="env_var:postgresql|host|5432|db",
+        resource_identity="postgresql|host|5432|db",
+        resource_protocol="postgresql",
+        resource_type="env_var",
+        resolution_status="external_confirmed",
+        identity_strength="exact",
+        services=("a", "b"),
+        observations=tuple(obs),
+        configuration_evidence={"a": ("DB_URL",), "b": ("DB_URL",)},
+        unresolved_vars=(),
+        representative_chain=(),
+        evidence_count=1,
+        service_count=2,
+        observation_resources=("DB_URL",),
+    )
+
+    judgments = [
+        CandidateJudgment(candidate_id="cid-1", verdict="meaningful", confidence=0.88, reason="shared db",
+                          supporting_evidence=("candidate:cid-1",), missing_information=(), model="mock"),
+    ]
+    contextual_results = [(gp, judgments, [])]
+    model = CouplingModel.from_contextual_judgments(contextual_results)
+    assert len(model.groups) == 1
+    group = model.groups[0]
+    assert group.verdict == "meaningful"
+    assert group.confidence == 0.88
+    assert group.resource_identity == "postgresql|host|5432|db"
+    assert group.services == ("a", "b")
+
+    # Test with failure
+    from blindspot.context_judge import JudgmentFailure
+    contextual_results_fail = [(gp, [], [JudgmentFailure(candidate_id="cid-1", error_type="provider_error", message="timeout")])]
+    model_fail = CouplingModel.from_contextual_judgments(contextual_results_fail)
+    assert len(model_fail.groups) == 1
+    assert model_fail.groups[0].verdict == "uncertain"
+    assert model_fail.groups[0].confidence == 0.0

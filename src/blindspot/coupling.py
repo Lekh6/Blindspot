@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Tuple, Optional
 
 from .aggregation import GroupedEvidencePackage
 from .judge import JudgeResult, VALID_VERDICTS, validate_judge_result
+from .context_judge import CandidateJudgment, JudgmentFailure
 
 logger = logging.getLogger("blindspot.coupling")
 
@@ -158,6 +159,42 @@ class CouplingModel:
         pairs: List[Tuple[GroupedEvidencePackage, JudgeResult]],
     ) -> "CouplingModel":
         groups = [CouplingGroup.from_grouped_judgment(g, r) for g, r in pairs]
+        return cls(groups)
+
+    @classmethod
+    def from_contextual_judgments(
+        cls,
+        contextual_results: List[Tuple[GroupedEvidencePackage, List[CandidateJudgment], List[JudgmentFailure]]],
+    ) -> "CouplingModel":
+        """Build CouplingModel from contextual multi-candidate judgments.
+
+        Each entry contains a GroupedEvidencePackage and the validated CandidateJudgment
+        objects for its candidates. We derive one CouplingGroup per grouped package
+        by aggregating individual candidate verdicts (meaningful > uncertain > coincidental).
+        """
+        from .context_judge import to_legacy_group_result
+
+        groups: List[CouplingGroup] = []
+        for gp, judgments, failures in contextual_results:
+            if gp is None:
+                continue
+            # Combine valid judgments with failures
+            all_judgments = list(judgments)
+            for fail in failures:
+                all_judgments.append(CandidateJudgment(
+                    candidate_id=fail.candidate_id,
+                    verdict="uncertain",
+                    confidence=0.0,
+                    reason=f"Judgment failed: {fail.error_type}: {fail.message}",
+                    supporting_evidence=(),
+                    missing_information=(fail.message,),
+                    model="failure",
+                ))
+            if all_judgments:
+                group_result = to_legacy_group_result(all_judgments, fallback_model=judgments[0].model if judgments else "unknown")
+            else:
+                group_result = JudgeResult(verdict="uncertain", confidence=0.0, reason="No judgments produced", model="unknown")
+            groups.append(CouplingGroup.from_grouped_judgment(gp, group_result))
         return cls(groups)
 
     @classmethod

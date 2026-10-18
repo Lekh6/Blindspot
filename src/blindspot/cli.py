@@ -23,7 +23,9 @@ from typing import List, Optional
 from dotenv import load_dotenv  # type: ignore[import-untyped]
 
 from .aggregation import aggregate_evidence_packages
+from .context import ContextBudget
 from .coupling import CouplingModel
+from .decision import DecisionModel, build_decision_model
 from .discovery import discover_candidates
 from .filtering import build_evidence_packages
 from .graph import build_graph_from_groups
@@ -32,6 +34,7 @@ from .inputs import (
     discover_compose_files,
     find_compose_file,
 )
+from .judge import judge_contextual, contextual_judgments_to_group_results
 from .parser import parse_compose_file
 from .report import build_grouped_report
 
@@ -596,6 +599,8 @@ def run_one_repo(
     # Track LLM vs cache for accounting (prompt §4 groups_judged vs LLM calls)
     cache_hits = 0
     llm_calls = 0
+    groups_judged = len(grouped)  # All groups sent through judgment (even if deterministic)
+    
     if deterministic_only:
         if grouped:
             print("  [info] Deterministic-only mode: skipped", len(grouped), "LLM call(s) — producing structural JSONs only.")
@@ -611,48 +616,49 @@ def run_one_repo(
         cache_hits = 0
     else:
         c_path = str(cache_path) if cache_path else None
-        from .judge import judge_grouped_packages
-        # Pre-count cache hits for accounting without extra LLM calls
+        # Use contextual judgment as primary path (adaptive batching, per-candidate verdicts)
+        budget = ContextBudget()
+        contextual_results = judge_contextual(grouped, client, cache_path=c_path, use_cache=bool(c_path), budget=budget, thinking=thinking)
+
+        # Convert to grouped JudgeResult pairs for downstream compatibility
+        pairs = contextual_judgments_to_group_results(contextual_results)
+
+        # Count LLM calls and cache hits for accounting
+        # Each context = 1 LLM call (or cache hit)
+        total_contexts = 0
+        cache_hits_count = 0
         if c_path and Path(c_path).exists():
             try:
-                import json as _json
-                from .judge import _load_cache  # type: ignore
-
+                from .judge import _load_cache
                 _cache_before = _load_cache(c_path)
-                # _cache_before is flat {key: result}, need to check each group's key
-                from .judge import _cache_key_for_grouped  # type: ignore
-
-                for g in grouped:
-                    try:
-                        k = _cache_key_for_grouped(g)
-                        if k in _cache_before:
-                            cache_hits += 1
-                    except Exception:
-                        pass
-                llm_calls = len(grouped) - cache_hits
+                # We can't easily pre-count without replicating context building logic
+                # Fall back to counting actual contexts judged
             except Exception:
-                llm_calls = len(grouped)
-                cache_hits = 0
-        else:
-            llm_calls = len(grouped)
-            cache_hits = 0
+                pass
+        # Estimate: each context that was judged = 1 call (or hit)
+        # The judge_contextual function handles caching internally per context
+        # For accounting, we'll use the number of contexts as groups_judged
+        # and track actual LLM calls via the client if it exposes that info
+        llm_calls = sum(1 for _, judgments, _ in contextual_results if judgments)  # approximate
+        cache_hits = groups_judged - llm_calls if groups_judged > llm_calls else 0
 
-        pairs = judge_grouped_packages(grouped, client, cache_path=c_path, use_cache=bool(c_path))
-        # After judging, if cache was used, actual cache hits may be higher than pre-count
-        # For simplicity, keep pre-count; llm_calls is groups not in cache before call
-
-    model = CouplingModel.from_grouped_judgments(pairs)
+    model = CouplingModel.from_contextual_judgments(contextual_results) if not deterministic_only else CouplingModel.from_grouped_judgments(pairs)
+    decision_model = build_decision_model(contextual_results) if not deterministic_only else DecisionModel(decisions=[])
     graph = build_graph_from_groups(model, meaningful_only=meaningful_only)
     # Build full accounting (prompt §2)
     raw_candidates = len(candidates)
     observations = len(packages)
     filtered_out = max(0, raw_candidates - observations)
     resource_groups = len(grouped)
-    groups_judged = len(grouped)  # all groups sent through judgment (even if deterministic)
     # meaningful/coincidental/uncertain from model (judged)
     meaningful_cnt = len([g for g in model.groups if g.verdict == "meaningful"])
     coincidental_cnt = len([g for g in model.groups if g.verdict == "coincidental"])
     uncertain_cnt = len([g for g in model.groups if g.verdict == "uncertain"])
+    # Stage 5 decision counts
+    potential_dep_cnt = len([d for d in decision_model.decisions if d.decision.value == "potential_dependency"])
+    insufficient_evidence_cnt = len([d for d in decision_model.decisions if d.decision.value == "insufficient_evidence"])
+    review_cnt = len([d for d in decision_model.decisions if d.decision.value == "review"])
+    processing_failure_cnt = len([d for d in decision_model.decisions if d.processing_status.value != "ok"])
     named_volumes_cnt = 0
     try:
         named_volumes_cnt = project.count_named_volumes()  # type: ignore[attr-defined]
@@ -664,6 +670,15 @@ def run_one_repo(
                 if vol.type == "named" and vol.source:
                     seen.add(vol.source)
         named_volumes_cnt = len(seen)
+    
+    # For contextual path, groups_judged = number of investigation contexts
+    # For grouped path (deterministic), groups_judged = number of grouped packages
+    if deterministic_only:
+        groups_judged = len(grouped)
+    else:
+        # Count unique investigation contexts from contextual results
+        groups_judged = len(contextual_results)
+
     accounting = {
         "application_root": str(repo_path),
         "sources": {
@@ -684,6 +699,13 @@ def run_one_repo(
             "uncertain": uncertain_cnt,
             "llm_calls": llm_calls,
             "cache_hits": cache_hits,
+        },
+        "decision": {
+            "potential_dependency": potential_dep_cnt,
+            "insufficient_evidence": insufficient_evidence_cnt,
+            "review": review_cnt,
+            "processing_failure": processing_failure_cnt,
+            "total_candidates": len(decision_model.decisions) if not deterministic_only else 0,
         },
         "graph": {
             "nodes": len(graph.get("nodes", [])),
@@ -764,6 +786,10 @@ def run_one_repo(
             "provider": provider,
             "thinking": thinking,
             "deterministic_only": deterministic_only,
+            "potential_dependencies": potential_dep_cnt,
+            "insufficient_evidence": insufficient_evidence_cnt,
+            "review": review_cnt,
+            "processing_failures": processing_failure_cnt,
         }
     )
     return result

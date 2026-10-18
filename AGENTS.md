@@ -79,16 +79,17 @@ Static analysis discovers possible candidates. The LLM evaluates those pre-extra
 
 Input:
 
-- `docker-compose.yml`
+- `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, `compose.yaml`
+- `docker-compose.json`, `compose.json` (equivalent Compose model as JSON)
 - `.env`
-- supported `env_file` sources
+- supported `env_file` sources (string, list, or `{path, required}` mapping)
 
 Extract and normalize:
 
-- services
+- services (with `image`, `depends_on`, `source_file`)
 - environment configuration
 - volumes
-- supported `${VAR_NAME}` / `${VAR_NAME:-default}` interpolation
+- supported `${VAR_NAME}` / `${VAR_NAME:-default}` / `$VAR` interpolation
 - image information (needed for evidence resolution)
 
 The parser should preserve unresolved references rather than silently inventing values.
@@ -109,10 +110,14 @@ The output should be a consistent internal representation that downstream stages
 
 Find services that share resources or configuration and could therefore be coupled.
 
-For the Tier 1 implementation, this includes:
+**Levels (conceptual, evidence depth separate from strength):**
 
-- shared environment configuration
-- shared named volumes
+- **L0** — Service-level relationship: declared `depends_on` or explicit reference. Baseline graph context, NOT automatically hidden coupling.
+- **L1** — Shared-resource relationship: two+ services independently reference the same underlying resource (datastore/queue/cache/object store/volume). Central to BlindSpot's hidden-coupling objective.
+- **L2** — Application-state (table-level): future extension, NOT implemented in Tier 1.
+
+**Tier 1 sources (preserved):** shared env keys + shared named volumes.
+**Stage 1+2 additions:** L0 `depends_on` + L1 cross-variable shared-endpoint identity (same normalized `postgresql|host|port|db` reached via different var names). Generic names alone never create a resource dependency; unresolved references preserve uncertainty (never invented, never silently dropped).
 
 Candidate Discovery identifies possible relationships but does **not** decide whether they are real dependencies.
 
@@ -352,9 +357,13 @@ It must include:
 
 - Docker Compose / `.env` parsing with traceable references
 - supported `env_file` imports
-- supported `${VAR_NAME}` interpolation (preserve unresolved)
+- supported `${VAR_NAME}` / `${VAR_NAME:-default}` / `$VAR` interpolation (preserve unresolved)
+- supported compose filenames: `docker-compose.yml|yaml`, `compose.yml|yaml`, `docker-compose.json`, `compose.json`
+- multi-file merge (env override, volumes union, `depends_on` union, image latest-wins, sources unioned)
 - shared environment-configuration candidate discovery (broad)
 - shared-volume candidate discovery
+- L0 explicit dependency discovery (`depends_on`, directional, unresolved targets kept)
+- L1 cross-variable shared-endpoint identity discovery (same normalized `protocol|host|port|db` via different var names)
 - deterministic candidate filtering (heuristics for obvious noise)
 - bounded evidence construction + deterministic resolution (service/image/interpolation/related config)
 - LLM judgment — 1 call per surviving candidate, structured `verdict/confidence/reason`, `uncertain` allowed

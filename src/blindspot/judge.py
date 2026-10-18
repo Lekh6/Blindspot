@@ -30,6 +30,16 @@ try:
 except Exception:  # pragma: no cover
     GroupedEvidencePackage = Any  # type: ignore
 
+# Contextual evidence (Prompt 3) — lazy import
+try:
+    from .context import InvestigationContext, ContextBudget  # type: ignore
+    from .context_judge import CandidateJudgment, JudgmentFailure  # type: ignore
+except Exception:  # pragma: no cover
+    InvestigationContext = Any  # type: ignore
+    ContextBudget = Any  # type: ignore
+    CandidateJudgment = Any  # type: ignore
+    JudgmentFailure = Any  # type: ignore
+
 Verdict = Literal["meaningful", "coincidental", "uncertain"]
 
 VALID_VERDICTS = {"meaningful", "coincidental", "uncertain"}
@@ -536,6 +546,82 @@ class GeminiJudgeClient:
                     pass
             return failsafe_result(package, f"Gemini API error: {type(e).__name__}: {e}", model=f"{self.fallback_model}-failsafe-api-error")
 
+    def complete_json(self, prompt: str) -> str:
+        """Send a raw prompt to the LLM and return the response text.
+
+        Used by contextual judgment path which builds its own prompts.
+        """
+        api_key = self._resolve_api_key()
+        if not api_key:
+            return f'[{{"candidate_id": "error", "verdict": "uncertain", "confidence": 0.5, "reason": "GEMINI_API_KEY not set", "supporting_evidence": [], "missing_information": []}}]'
+
+        try:
+            from google import genai  # type: ignore[import-untyped]
+            from google.genai import types  # type: ignore[import-untyped]
+        except ImportError as e:
+            return f'[{{"candidate_id": "error", "verdict": "uncertain", "confidence": 0.5, "reason": "google-genai not installed: {e}", "supporting_evidence": [], "missing_information": []}}]'
+
+        budget = self._thinking_budget()
+        generate_config: Dict[str, Any] = {
+            "temperature": self.temperature,
+            "response_mime_type": "application/json",
+        }
+        if any(v in self.model for v in ("3.7", "3.1", "2.5")) and budget is not None:
+            try:
+                config = types.GenerateContentConfig(
+                    temperature=self.temperature,
+                    response_mime_type="application/json",
+                    thinking_config=types.ThinkingConfig(thinking_budget=budget),
+                )
+                return self._complete_with_config(genai, config, prompt, api_key)
+            except Exception:
+                pass
+
+        try:
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=generate_config,
+            )
+            return self._extract_text(response)
+        except Exception as e:
+            if self.fallback_model != self.model:
+                try:
+                    client2 = genai.Client(api_key=api_key)
+                    resp2 = client2.models.generate_content(
+                        model=self.fallback_model,
+                        contents=prompt,
+                        config={"temperature": self.temperature, "response_mime_type": "application/json"},
+                    )
+                    return self._extract_text(resp2)
+                except Exception:
+                    pass
+            return f'[{{"candidate_id": "error", "verdict": "uncertain", "confidence": 0.5, "reason": "Gemini API error: {type(e).__name__}: {e}", "supporting_evidence": [], "missing_information": []}}]'
+
+    def _complete_with_config(self, genai: Any, config: Any, prompt: str, api_key: str) -> str:
+        try:
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=config,
+            )
+            return self._extract_text(response)
+        except Exception as e:
+            if self.fallback_model != self.model:
+                try:
+                    client2 = genai.Client(api_key=api_key)
+                    resp2 = client2.models.generate_content(
+                        model=self.fallback_model,
+                        contents=prompt,
+                        config={"temperature": self.temperature, "response_mime_type": "application/json"},
+                    )
+                    return self._extract_text(resp2)
+                except Exception:
+                    pass
+            return f'[{{"candidate_id": "error", "verdict": "uncertain", "confidence": 0.5, "reason": "Gemini API error: {type(e).__name__}: {e}", "supporting_evidence": [], "missing_information": []}}]'
+
     @staticmethod
     def _extract_text(response: Any) -> str:
         # google-genai response.text is the aggregated text
@@ -743,6 +829,47 @@ class OpenRouterJudgeClient:
                 last_err = f"{type(e).__name__}: {e} (raw: {raw[:600]!r})"
                 break
         return failsafe_result(package, f"Malformed LLM JSON: {last_err}", model=f"{FAILSAFE_MODEL}-failsafe-parse-error")
+
+    def complete_json(self, prompt: str) -> str:
+        """Send a raw prompt to the LLM and return the response text.
+
+        Used by contextual judgment path which builds its own prompts.
+        """
+        api_key = self._resolve_api_key()
+        if not api_key:
+            return f'[{{"candidate_id": "error", "verdict": "uncertain", "confidence": 0.5, "reason": "OPENROUTER_API_KEY not set", "supporting_evidence": [], "missing_information": []}}]'
+
+        try:
+            from openai import OpenAI  # type: ignore[import-untyped]
+        except ImportError as e:
+            return f'[{{"candidate_id": "error", "verdict": "uncertain", "confidence": 0.5, "reason": "openai not installed: {e}", "supporting_evidence": [], "missing_information": []}}]'
+
+        try:
+            client = OpenAI(api_key=api_key, base_url=self.base_url)
+            extra_headers: Dict[str, str] = {}
+            if self.site_url:
+                extra_headers["HTTP-Referer"] = self.site_url
+            if self.app_name:
+                extra_headers["X-Title"] = self.app_name
+            kwargs: Dict[str, Any] = {
+                "model": self.model,
+                "temperature": self.temperature,
+                "max_tokens": self._max_tokens(),
+                "messages": [
+                    {"role": "system", "content": "You are a precise architecture judge. Return JSON only with verdict (meaningful|coincidental|uncertain), confidence 0-1, reason (1-2 sentences)."},
+                    {"role": "user", "content": prompt},
+                ],
+            }
+            try:
+                kwargs["response_format"] = {"type": "json_object"}
+            except Exception:
+                pass
+            if extra_headers:
+                kwargs["extra_headers"] = extra_headers  # type: ignore
+            resp = client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            return f'[{{"candidate_id": "error", "verdict": "uncertain", "confidence": 0.5, "reason": "OpenRouter API error: {type(e).__name__}: {e}", "supporting_evidence": [], "missing_information": []}}]'
 
 
 # ---------------------------------------------------------------------------
@@ -1095,6 +1222,154 @@ def judge_grouped_packages(
         result = judge_grouped_package(pkg, client, cache_path=cache_path, use_cache=use_cache)
         results.append((pkg, result))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Contextual judgment (Prompt 3 — primary Stage 4 path)
+# ---------------------------------------------------------------------------
+
+class ContextualJudgeClient(Protocol):
+    """Protocol for contextual LLM judgment — one call per investigation context."""
+
+    def complete_json(self, prompt: str) -> str: ...
+
+    @property
+    def model_name(self) -> str: ...
+
+
+def _grouped_to_contexts(
+    grouped_packages: List[Any],
+    budget: Optional[ContextBudget] = None,
+) -> Tuple[List[InvestigationContext], List[Dict[str, Any]]]:
+    """Convert GroupedEvidencePackage list to InvestigationContext list with adaptive packing.
+
+    Uses the existing context building pipeline: groups by identity, then splits
+    oversized groups deterministically within budget constraints.
+    """
+    from .context import build_contexts_for_packages
+    from .filtering import EvidencePackage
+
+    # Flatten all observations from grouped packages into pairwise evidence packages
+    all_packages: List[EvidencePackage] = []
+    for gp in grouped_packages:
+        all_packages.extend(gp.observations)
+
+    # Build contexts using existing pipeline (groups by identity, then splits)
+    contexts, failures = build_contexts_for_packages(all_packages, budget=budget)
+    return contexts, failures
+
+
+def judge_contextual(
+    grouped_packages: List[Any],
+    client: Any,
+    cache_path: Optional[Union[Path, str]] = None,
+    use_cache: bool = True,
+    budget: Optional[ContextBudget] = None,
+    thinking: str = "low",
+) -> List[Tuple[Any, List[CandidateJudgment], List[JudgmentFailure]]]:
+    """Primary Stage 4 entry point: contextual multi-candidate judgment.
+
+    Flow:
+      1. Convert grouped packages to investigation contexts (adaptive packing)
+      2. One LLM call per context via client.complete_json()
+      3. Validate individual candidate judgments
+      4. Cache valid results per context
+      5. Return per-grouped-package results with individual judgments
+
+    Returns list of (grouped_package, valid_judgments, failures) tuples.
+    """
+    # Convert to contexts
+    contexts, conversion_failures = _grouped_to_contexts(grouped_packages, budget)
+
+    # Map contexts back to their grouped packages for result assembly
+    # Each context knows its candidate_ids; we need to find which grouped package they belong to
+    pkg_by_candidate_id: Dict[str, Any] = {}
+    for gp in grouped_packages:
+        for obs in gp.observations:
+            cid = obs.candidate_id or f"{obs.service_a}/{obs.service_b}/{obs.resource}"
+            pkg_by_candidate_id[cid] = gp
+
+    results: List[Tuple[Any, List[CandidateJudgment], List[JudgmentFailure]]] = []
+
+    # Local import to avoid circular dependency (context_judge imports from judge)
+    from .context_judge import judge_investigation_context
+
+    for ctx in contexts:
+        # Judge this context
+        valid_judgments, failures = judge_investigation_context(
+            ctx, client, cache_path=cache_path, use_cache=use_cache, thinking=thinking
+        )
+
+        # Attach conversion failures if any candidates in this context had them
+        for cid in ctx.candidate_ids:
+            for fail in conversion_failures:
+                if fail.get("candidate_id") == cid:
+                    failures.append(JudgmentFailure(
+                        candidate_id=cid,
+                        error_type=fail.get("error_type", "context_conversion"),
+                        message=fail.get("message", "context construction failed"),
+                    ))
+
+        # Determine which grouped package this context primarily belongs to
+        # (use first candidate's grouped package as representative)
+        primary_pkg = None
+        for cid in ctx.candidate_ids:
+            if cid in pkg_by_candidate_id:
+                primary_pkg = pkg_by_candidate_id[cid]
+                break
+
+        if primary_pkg is not None:
+            results.append((primary_pkg, valid_judgments, failures))
+        else:
+            # Fallback: create a dummy result entry
+            results.append((None, valid_judgments, failures))
+
+    # Also handle grouped packages that had no contexts (edge case)
+    for gp in grouped_packages:
+        if not any(r[0] is gp for r in results):
+            results.append((gp, [], [JudgmentFailure(
+                candidate_id="", error_type="no_context",
+                message="no investigation context created for this group"
+            )]))
+
+    return results
+
+
+def contextual_judgments_to_group_results(
+    contextual_results: List[Tuple[Any, List[CandidateJudgment], List[JudgmentFailure]]],
+) -> List[Tuple[Any, JudgeResult]]:
+    """Convert contextual judgment results to grouped package + JudgeResult pairs.
+
+    For downstream compatibility (CouplingModel, Graph, Report), we derive one
+    JudgeResult per grouped package from the individual candidate judgments.
+    Uses deterministic precedence: meaningful > uncertain > coincidental.
+    """
+    from .context_judge import to_legacy_group_result
+
+    out: List[Tuple[Any, JudgeResult]] = []
+    for gp, judgments, failures in contextual_results:
+        if gp is None:
+            continue
+        # Combine valid judgments with failures (failures treated as uncertain)
+        all_judgments = list(judgments)
+        for fail in failures:
+            # Create a synthetic uncertain judgment for failed candidates
+            from .context_judge import CandidateJudgment
+            all_judgments.append(CandidateJudgment(
+                candidate_id=fail.candidate_id,
+                verdict="uncertain",
+                confidence=0.0,
+                reason=f"Judgment failed: {fail.error_type}: {fail.message}",
+                supporting_evidence=(),
+                missing_information=(fail.message,),
+                model="failure",
+            ))
+        if all_judgments:
+            group_result = to_legacy_group_result(all_judgments, fallback_model=judgments[0].model if judgments else "unknown")
+        else:
+            group_result = JudgeResult(verdict="uncertain", confidence=0.0, reason="No judgments produced", model="unknown")
+        out.append((gp, group_result))
+    return out
 
 
 # Convenience alias for direct Candidate filtering + judging pipeline

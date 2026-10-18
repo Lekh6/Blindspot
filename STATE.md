@@ -2,15 +2,9 @@
 
 > Single source of truth for where BlindSpot stands. Update this file on every meaningful change.
 
-<<<<<<< HEAD
-**Last Updated:** 2026-09-07 (Input Transparency & Accounting)
-**Branch:** `main` — working tree: Stages 1–7 **DONE** + Tier 1 Redesign **DONE** + Prompt 2 **DONE** (grouped resource-centric) + **Interactive CLI** + **Edge-Case Sweep (12 fixes)** + **General README + Deterministic Fallback + run.py** + **Windows Input Fix** + **Fix .env Spam (4×→0)** + **Versioned History (report_1, _2)** + **Input Transparency & Accounting**; Tier 2 (Kubernetes) next
-**Status:** `Tier 1 COMPLETE + REDESIGN + GROUPED + INTERACTIVE CLI + SWEEP + GENERAL SETUP + WIN FIX + NOSPAM + VERSIONED + ACCOUNTING` — Stages 1–7 **DONE** (parser + discovery + filtering + **bounded resolution** + **aggregation by normalized_identity** + **LLM Judge grouped 1/group** + **CouplingModel** + **Graph from groups** + **Grouped Report + Accounting** + **Interactive CLI: absolute C:\ path + low/medium/high + API-key prompt every run + deterministic-only JSONs** + **run.py/run.bat + versioned history + separate Services/Candidates accounting**) — Tier 1 is demoable; `celery` 5 services → 0 candidates now clearly distinguished from 0 services; Tier 2 next
-=======
-**Last Updated:** 2026-09-28 (Tier 1 Audit + Loose-End Closure)
-**Branch:** `main` — working tree: Tier 1 **FROZEN** (Stages 1–7 done, audited 2026-09-28, 119 tests green) + Tier 2 **PROPOSAL ONLY** (D-039, no implementation); `src/` changes limited to 2 audit fixes (F1/F2, see D-042)
-**Status:** `TIER 1 AUDITED — VALIDATION + DEEPENING DIRECTION SET (D-041/D-042/D-043)` — audit complete (Workstream A done); next is Workstream B multi-repo evaluation + ground truth, then evidence-based fixes. After validation: deepen toward L2 (table) per D-043 (directional, not final). Kubernetes/source-runtime deferred; evidence tiers + honest claims required
->>>>>>> 8d28c21 (Working tier 1)
+**Last Updated:** 2026-10-12 (D-044 Stage 1+2 Enhancement)
+**Branch:** `main` — working tree: Tier 1 **FROZEN** (Stages 1–7 done, audited, 131 tests green) + D-044 Stage 1+2 enhancement done (input adapters + L0/L1 discovery) + Tier 2 **PROPOSAL ONLY** (D-039, no implementation)
+**Status:** `TIER 1 AUDITED + D-044 ENHANCEMENT` — audit complete (Workstream A done); D-044 adds input adapters (4 YAML + 2 JSON), L0 `depends_on`, L1 cross-variable shared-endpoint identity, multi-file merge; tests: 131 passed (119 existing + 12 new `test_stage12.py`). Next: Workstream B multi-repo validation + ground truth, then evidence-based fixes. After validation: deepen toward L2 (table) per D-043 (directional, not final). Kubernetes/source-runtime deferred; evidence tiers + honest claims required
 
 ---
 
@@ -18,20 +12,14 @@
 
 | Area | State |
 |------|-------|
-| **Repo Init** | `git` on `main`, `AGENTS.md` 522 LOC + `PROJECT_PLAN.md` 301 LOC (hybrid spec) |
-| **Architecture Doc** | `AGENTS.md` = hybrid deterministic + LLM (§3 bounded evidence with `internal/external_confirmed/partial/unresolved` + identity `exact/config/unknown`, §4 one call/candidate, confidence mandatory, §6 React Flow DATA + normalized_identity dedup) + provider-agnostic |
+| **Repo Init** | `git` on `main`, `AGENTS.md` 530+ LOC + `PROJECT_PLAN.md` 310+ LOC (hybrid spec + D-044) |
+| **Architecture Doc** | `AGENTS.md` = hybrid deterministic + LLM (§3 bounded evidence with `internal/external_confirmed/partial/unresolved` + identity `exact/config/unknown`, §4 one call/candidate, confidence mandatory, §6 React Flow DATA + normalized_identity dedup) + provider-agnostic + D-044 L0/L1 discovery |
 | **Global Config** | `~/.config/opencode/opencode.jsonc` model `opencode/muse-spark-1.2-contributor-free` |
-<<<<<<< HEAD
-| **Codebase** | `parser.py` 540 LOC + `count_named_volumes()` + `discovery.py` 132 LOC + `resolution.py` 607 LOC + `aggregation.py` 200 LOC + `coupling.py` 150 LOC + `filtering.py` 530 LOC + `judge.py` 1050 LOC + `model.py` 265 LOC + `graph.py` 350 LOC + `report.py` 550 LOC (accounting `application`/`inputs`/`analysis` + `Analysis input`/`Pipeline summary` + zero-result explanations) + `cli.py` ~750 LOC (input source tracking `_discover_compose_sources`/`_relative_to_root` + full pipeline accounting + separate Services/Candidates CLI) + `run.py`/`run.bat`/`run.sh` |
-| **Fixtures** | 3 messy fixtures — invariants preserved |
-| **Tests** | **98 passed** (`test_parser` 32 + `test_discovery` 8 + `test_filtering` 8 + `test_graph` 13 + `test_resolution` 17 + `test_grouping` 14 + `test_accounting` 6) |
-=======
-| **Codebase** | `parser.py` + drive-letter bind fix (D-042 F1) + `discovery.py` 132 LOC + `resolution.py` 607 LOC + `aggregation.py` 200 LOC + `coupling.py` 150 LOC + `filtering.py` 530 LOC + `judge.py` 1050 LOC (prompt `uncertain` wording fix D-042 F2) + `model.py` 265 LOC + `graph.py` 350 LOC + `report.py` 550 LOC + `cli.py` ~750 LOC + `run.py`/`run.bat`/`run.sh` |
-| **Fixtures** | 3 messy fixtures — invariants preserved (e2e re-verified 2026-09-28) |
-| **Tests** | **119 passed** (`test_parser` 32 + `test_discovery` 8 + `test_filtering` 8 + `test_graph` 13 + `test_resolution` 17 + `test_grouping` 14 + `test_accounting` 6 + `test_audit` 21 new) — hermetic, no network (conftest key-restore + Case F key-block, D-042 F4) |
-| **Dev env** | `.venv` rebuilt 2026-09-28 (was broken: base Python 3.14 deleted) → Python 3.12.10 + `requirements.txt` + pytest; `python run.py --help` verified |
->>>>>>> 8d28c21 (Working tier 1)
-| **Docs** | `STATE.md`/`HANDOFF.md`/`DECISIONS.md`/`README.md` refreshed 2026-09-07 (input transparency: `Analysis input`/`Pipeline summary`, separate `Services` vs `Candidates`, `application`/`inputs`/`analysis` in JSON) |
+| **Codebase** | `parser.py` (Service.image/depends_on/source_file, Project.sources, multi-file merge) + `inputs.py` 119 LOC (adapter boundary: `SUPPORTED_COMPOSE_FILENAMES` 4 YAML + 2 JSON, `load_compose_document`, `discover/find_compose_file`) + `discovery.py` 387 LOC (Candidate `candidate_id/level/relationship_type/origin/resource_identity/provenance`; L0 `depends_on` + L1 `shared_env`/`shared_volume`/`shared_endpoint`) + `filtering.py` 875 LOC + `resolution.py` 607 LOC + `aggregation.py` 200 LOC + `coupling.py` 150 LOC + `judge.py` 1050 LOC + `model.py` 265 LOC + `graph.py` 350 LOC + `report.py` 550 LOC + `cli.py` ~750 LOC + `context.py` + `context_judge.py` + `decision.py` + `secrets.py` + `run.py`/`run.bat`/`run.sh` |
+| **Fixtures** | 4 fixture dirs: `shared_env`, `shared_volume`, `near_miss`, `stage12_levels` (L0 + cross-var endpoint + generic + unresolved + missing target) |
+| **Tests** | **131 passed** (`test_parser` 32 + `test_discovery` 8 + `test_filtering` 8 + `test_graph` 13 + `test_resolution` 17 + `test_grouping` 14 + `test_accounting` 6 + `test_audit` 21 + `test_stage12` 12) — hermetic, no network |
+| **Dev env** | `.venv` rebuilt 2026-09-28 (Python 3.12.10) + `requirements.txt` + pytest; `python run.py --help` verified |
+| **Docs** | `STATE.md`/`HANDOFF.md`/`DECISIONS.md`/`README.md` refreshed 2026-10-12 (D-044: input adapters, L0/L1, multi-file merge, 12 new tests) |
 | **Gitignore** | `!fixtures/**/.env` + `!fixtures/**/common.env` + `cache.json` + `.env` + `out/` / `report.json` / `report.md` ignored |
 
 ---
@@ -40,42 +28,44 @@
 
 | # | Stage | Status | Notes |
 |---|-------|--------|-------|
-| 1 | **Parse + Normalize** | `Done` | `parser.py:45` `Service.image`, `parser.py:488` image capture, `parser.py:397` multi-file, traceable refs |
-| 2 | **Candidate Discovery** | `Done` | `discovery.py:20` `Candidate` with `value`, pairwise env + `named_volume` only, sorted |
-| 3 | **Filtering + Resolution + Aggregation** | `Done` ⬅ **PROMPT 2 + ACCOUNTING** | `resolution.py:1` `ResolutionResult` + `bounded_resolve:270` + `aggregation.py:1` `aggregate_evidence_packages` (group by `normalized_identity`) — now with `raw_candidates` vs `observations` vs `filtered_out` accounting |
-| 4 | **LLM Judge (Grouped)** | `Done` | `judge.py:96` `build_grouped_judge_prompt` + `judge_grouped_package:cache` + `0+1/group`, cache `groups_judged` vs `llm_calls`/`cache_hits` accounting |
-| 5 | **Coupling Model** | `Done` ⬅ **PROMPT 2** | `coupling.py:1` `CouplingGroup` — one per shared resource, Graph+Report consume same |
-| 6 | **Graph (Grouped)** | `Done` | `graph.py:76` `_resource_key` + `build_graph_from_groups:150` — Cal.com 1 node +3 edges, now `graph.nodes`/`edges` in accounting |
-| 7 | **Report (Grouped)** | `Done` ⬅ **ACCOUNTING** | `report.py:550` `GroupedReportData` now `application`/`inputs`/`analysis` + `Analysis input`/`Pipeline summary` + zero-result explanations (`No Tier 1 candidates generated` vs `No services discovered`), separate `Services discovered` vs `Candidates generated` |
+| 1 | **Parse + Normalize** | `Done` | `parser.py` + `inputs.py` adapter: 4 YAML + 2 JSON, `Service.image/depends_on/source_file`, `Project.sources`, multi-file merge, traceable refs |
+| 2 | **Candidate Discovery** | `Done` | `discovery.py`: `Candidate` with `candidate_id/level/relationship_type/origin/resource_identity/provenance`; L0 `depends_on` + L1 `shared_env`/`shared_volume`/`shared_endpoint` (cross-var identity), deterministic dedup/sort |
+| 3 | **Filtering + Resolution + Aggregation** | `Done` | `resolution.py` `bounded_resolve` + `aggregation.py` `aggregate_evidence_packages` (group by `normalized_identity`) — L0 fast-path `internal/unresolved` + endpoints `internal/external_confirmed` |
+| 4 | **LLM Judge (Grouped)** | `Done` | `judge.py` `build_grouped_judge_prompt` + `judge_grouped_packages` `0+1/group`, cache `groups_judged` vs `llm_calls`/`cache_hits` accounting |
+| 5 | **Coupling Model** | `Done` | `coupling.py` `CouplingGroup` — one per shared resource, Graph+Report consume same |
+| 6 | **Graph (Grouped)** | `Done` | `graph.py` `_resource_key` + `build_graph_from_groups` — L0 as `resource:service_dependency:*` nodes, bipartite |
+| 7 | **Report (Grouped)** | `Done` | `report.py` `GroupedReportData` `application`/`inputs`/`analysis` + `Analysis input`/`Pipeline summary` + zero-result explanations |
 
-**Overall Tier 1:** **100% (code) + redesign — FROZEN since 2026-09-27** (change only for concrete bugs/validation). Findings are potential shared-resource coupling signals, not runtime proof (D-038).
+**Overall Tier 1:** **100% (code) + D-044 enhancement — FROZEN** (change only for concrete bugs/validation). Findings are potential shared-resource coupling signals, not runtime proof (D-038).
 **Tier 2 (Kubernetes):** `PROPOSAL ONLY — NO IMPLEMENTATION` — D-039 defines the approval gate: K8s must demonstrate key-level/indirect coupling Tier 1 cannot find (same ConfigMap/Secret key under different env names, cross-namespace, Service DNS → Endpoints). Mere same-database YAML parsing is not a sufficient differentiator. Read-only API preferred; secret values never exposed; eBPF/tracing out of scope.
 
 ---
 
-## 3. Repo Structure (Actual 2026-09-07 General + Deterministic)
+## 3. Repo Structure (Actual 2026-10-12 D-044)
 
 ```
 Blindspot/
-├── AGENTS.md (522), PROJECT_PLAN.md (301), STATE.md, DECISIONS.md, HANDOFF.md
-├── README.md (First Time Setup vs Running — general purpose, now with Analysis input/Pipeline summary docs)
+├── AGENTS.md (530+), PROJECT_PLAN.md (310+), STATE.md, DECISIONS.md, HANDOFF.md
+├── README.md (First Time Setup vs Running — general purpose, with Input Formats & Dependency Levels)
 ├── run.py / run.bat / run.sh (simple launchers — no PYTHONPATH needed)
 ├── .gitignore (allows fixtures/**/.env, ignores cache.json + .env + out/)
 ├── .env (API key, gitignored — created via prompt if missing)
-├── fixtures/ (shared_env, shared_volume, near_miss) + out/ per repo (report.json/md, graph.json)
+├── fixtures/ (shared_env, shared_volume, near_miss, stage12_levels) + out/ per repo (report.json/md, graph.json)
 ├── src/blindspot/
 │   ├── __init__.py (exports all stages + grouped)
-│   ├── parser.py (540 LOC + YAML/UTF-8 + env_file warnings + count_named_volumes)
-│   ├── discovery.py (132 LOC)
+│   ├── inputs.py (119 LOC, adapter boundary: SUPPORTED_COMPOSE_FILENAMES 4 YAML + 2 JSON, load_compose_document, discover/find_compose_file)
+│   ├── parser.py (540+ LOC + YAML/UTF-8 + env_file warnings + count_named_volumes; Service.image/depends_on/source_file; Project.sources; YAML+JSON share _parse_services)
+│   ├── discovery.py (387 LOC, Candidate{candidate_id/level/relationship_type/origin/resource_identity/provenance}; L0 depends_on + L1 shared_env/shared_volume/shared_endpoint)
 │   ├── resolution.py (607 LOC) — bounded chain + normalize
 │   ├── aggregation.py (200 LOC) — group by normalized_identity + truncation warn
 │   ├── coupling.py (150 LOC) — CouplingGroup/Model
-│   ├── filtering.py (530 LOC) — states + identity
+│   ├── filtering.py (875 LOC) — states + identity + L0/endpoint fast-paths
 │   ├── judge.py (1050 LOC, grouped prompt/cache + balanced JSON + atomic cache)
 │   ├── model.py (265 LOC)
 │   ├── graph.py (350 LOC, build_graph + build_graph_from_groups)
 │   ├── report.py (550 LOC, grouped + accounting application/inputs/analysis + Analysis input/Pipeline summary)
-│   └── cli.py (~750 LOC, input source tracking + full accounting + separate Services/Candidates)
+│   ├── cli.py (~750 LOC, input source tracking + full accounting + separate Services/Candidates)
+│   ├── context.py, context_judge.py, decision.py, secrets.py
 └── tests/
     ├── test_parser.py (32)
     ├── test_discovery.py (8)
@@ -83,17 +73,14 @@ Blindspot/
     ├── test_graph.py (13)
     ├── test_resolution.py (17)
     ├── test_grouping.py (14) — resource-centric aggregation
-    └── test_accounting.py (6) — Cases A-F (services vs candidates, no sources, filtered, aggregation, meaningful, sources)
+    ├── test_accounting.py (6) — Cases A-F
+    ├── test_audit.py (21)
+    └── test_stage12.py (12) — input adapters + L0/L1 acceptance
 ```
 
 **Validation & Next:**
-<<<<<<< HEAD
-- Tested on 3 synthetic fixtures + `celery-docker-example` (5 services, `docker-compose.yml` used, 0 candidates → correctly `5 services, 0 candidates, 0 observations` not `0 services`) + `docker` (Cal.com-like, 5 services, 6 raw → 6 obs → 1 group → 1 meaningful → 4 nodes/3 edges) + versioned history (`report.json` → `report_1.json`). `98 tests pass`.
-- **Tier 2 NEXT:** Kubernetes manifests (ConfigMap/Secret/volumes) → same filtering → Judge → Model → Graph → Report pipeline
-=======
-- Tested on 3 synthetic fixtures + `celery-docker-example` (5 services, 0 candidates → `5 services, 0 candidates, 0 observations`) + `tmp_calcom2` (3 services, 6 raw → 6 obs → 1 group, deterministic) + versioned history. `119 tests pass` (verified 2026-09-28 with rebuilt `.venv`, Python 3.12.10).
+- Tested on 4 synthetic fixtures + `celery-docker-example` (5 services, 0 candidates) + `tmp_calcom2` (3 services, 6 raw → 6 obs → 1 group) + `docker` (Cal.com-like, 5 services, 6→6→1→1). `131 tests pass` (verified 2026-10-12).
 - **NEXT (D-041/D-042): Workstream B multi-repo validation** — run `python run.py` against 2–3 real OSS Compose repos; per-repo candidates/findings/TP-FP review + ground-truth set; then evidence-based fixes only. Tier 1 stays frozen except demonstrated fixes.
->>>>>>> 8d28c21 (Working tier 1)
 
 ---
 
@@ -114,7 +101,7 @@ Blindspot/
 
 1. Messy fixtures — **DONE**
 2. Config parser — **DONE (FROZEN)**
-3. Candidate discovery — **DONE (FROZEN)**
+3. Candidate discovery — **DONE (FROZEN + D-044 L0/L1)**
 4. Candidate filtering — **DONE (FROZEN)**
 5. Bounded evidence + resolution redesign (states, chain, identity) — **DONE 2026-09-06 (FROZEN)**
 6. LLM judgment layer + verdict cache (`cache.json` with normalized keys) — **DONE (FROZEN)**
@@ -129,26 +116,13 @@ Blindspot/
 
 ## 6. Recent Activity
 
-<<<<<<< HEAD
-=======
+- 2026-10-12: **D-044 Stage 1+2 Enhancement DONE** — additive-only enhancement on `main` preserving D-042 baseline (119→131 green, hermetic). Stage 1 (`inputs.py` new, `parser.py`/`cli.py` adapted): `Input format → adapter → canonical Project → pipeline`. `SUPPORTED_COMPOSE_FILENAMES` = 4 YAML + `docker-compose.json`/`compose.json` (equivalent model, shared `_parse_services`, no separate discovery). Canonical `Service` gains `depends_on` (list/mapping/string normalized, sorted) + `source_file`; `Project` gains `sources`. Multi-file merge unions `depends_on`/`sources`. Unresolved `${VAR}` still preserved, never invented. CLI delegates discovery/find to `inputs` (superset behavior, same determinism). K8s/Terraform explicitly not built. Stage 2 (`discovery.py` extended, `filtering.py` fast-paths only): `Candidate` gains `candidate_id` (sha256-16, order-independent), `level` (L0/L1), `relationship_type` (`explicit_dependency`/`shared_env`/`shared_volume`/`shared_endpoint`), `origin`, `resource_identity`, `provenance` — all defaulted/backfilled so old constructions keep working. New sources: L0 `depends_on` (directional, missing targets kept unresolved) + L1 `shared_endpoint` (same normalized `protocol|host|port|db` via different var names, e.g. `DATABASE_URL` vs `DB_URL`; skips pairs already covered same-key and skips unknown/unresolved). Generic names alone never create a resource dependency; dedup by `(level,type,resource,value,pair)` keeps distinct resources separate; sort stable. Downstream already passed unknown types through conservatively; added explicit resolve/decide fast-paths so L0 reports `internal/unresolved` + `service|target` and endpoints report `internal/external_confirmed` + exact identity. Graph stays bipartite (L0 as `resource:service_dependency:*` nodes, never service→service). Tests: `fixtures/stage12_levels/` (L0 + cross-var endpoint + generic + unresolved + missing target) + `tests/test_stage12.py` (12 acceptance tests, hermetic). Also fixed pre-existing committed merge markers in `tests/test_accounting.py` (kept hermetic Case F) that blocked collection.
+
 - 2026-09-28: **Tier 1 Audit + Loose-End Closure DONE (D-042)** — full stage-by-stage audit (docs vs implementation vs tests); baseline 98 passed. Fixed F1 Windows drive-letter binds (`C:\data:/app` was parsed as named volume `C` → false shared-volume candidate; now `bind` with full source, `parser.py` `_WINDOWS_DRIVE_RE` + `_is_bind_source`), F2 judge prompts listed option 3 as bare `insufficient` while schema requires `uncertain` (both pairwise + grouped prompts fixed), F4 test hermeticity (`conftest.py` autouse API-key env snapshot/restore + Case F key-block: `run_one_repo` tests previously loaded the real repo `.env` and could make live LLM calls — suite took 20s with network; now 0.35s, no network). Added `tests/test_audit.py` (21 tests: Windows volumes, prompt wording, judge cache hit/reuse/key-sensitivity/failsafe, model validation, report round-trip, graph bipartite). Rebuilt broken `.venv` (Python 3.12.10) and verified `python run.py --help`. E2E re-verified deterministic on 3 fixtures + `tmp_calcom2` (3 svc → 6 obs → 1 group). Observation (not a defect): live-keyed fixture runs judged `uncertain` where README shows `meaningful` — LLM variance, needs Workstream B/C consistency review, no code change.
+
 - 2026-09-28: **Deepening direction set (D-043, provisional — no `src/` changes)** — L0→L1→L2 taxonomy (+visible/hidden label, L3/L4 out), AI as micro-verifier of bounded snippet tasks, one prompt per resource group (map + compose slice + bounded tree + ID-tagged questions, JSON-array response), weighted deterministic combiner → `strong/likely/possible/no-evidence` bands, pointer chains per finding. Sequenced plan (taxonomy → value discovery → table extractor → verifier/combiner → layered graph/report) only after Tier 1 validation.
 
 - 2026-09-27: **Tier 1 Frozen + Tier 2 Proposal-First Reframe DONE (docs only, no `src/` changes)** — `MISSION.md` rewritten (potential-coupling mission, frozen Tier 1, central-but-gated K8s, optional source, evidence tiers `configuration-confirmed/statically inferred/runtime-observed`, guiding principle); `DECISIONS.md` D-038 (freeze + honest claims) / D-039 (K8s proposal: same-key-under-different-names gap, cross-namespace ConfigMap-key + Secret-key + Service-DNS example, objects/evidence, source optional, pipeline flow, `fixtures/k8s_schema_share/` PoC ground truth, non-claims) / D-040 (selective source + tiers); `STATE.md`/`HANDOFF.md`/`AGENTS.md`/`PROJECT_PLAN.md` Tier 2 switched from "implement next" to "proposal approval required". Contradictions resolved: same-DB YAML parsing insufficient, AST-exclusion vs selective source, stretch-vs-central K8s, secret-value guardrail, read-only API preference.
-
->>>>>>> 8d28c21 (Working tier 1)
-- 2026-09-07: **Input Transparency & Accounting DONE** — Prompt observability: `parser.py:62` `count_named_volumes()`, `cli.py` `_discover_compose_sources`/`_relative_to_root` + full accounting (`application_root`, `sources.discovered/used`, `parsed.services/named_volumes`, `discovery.raw_candidates/observations/filtered_out`, `aggregation.resource_groups`, `judgment.groups_judged/llm_calls/cache_hits/meaningful`, `graph.nodes/edges`) passed to `report.py` `build_grouped_report(accounting)` → `report.json` now `application`/`inputs`/`analysis` + `summary` (backward compat) + `report.md` `Analysis input`/`Pipeline summary` with separate `Services discovered` vs `Candidates generated` and explanations (`No Tier 1 candidates generated` vs `No services discovered`, `6 obs → 1 group`). CLI interactive/batch now same accounting. `celery` 5 services → 0 candidates now diagnosable, `docker` 6→6→1→1 still consistent. Added `tests/test_accounting.py` 6 cases (A-F), total `98 tests pass`.
-- 2026-09-07: **Versioned History DONE** — `cli.py` now keeps history instead of overwrites: `out/<app>/report.json` (1st), `report_1.json` / `report_1.md` / `graph_1.json` / `report_1.log.json` (2nd), `report_2.json` etc. via `_versioned_path` (handles `report.log.json` → `report_1.log.json`). Re-analyzing same `C:\path\to\YourApp` no longer loses previous outputs.
-- 2026-09-07: **Fix .env Spam DONE** — `parser.py` `env_file not found: .../.env` printed 4× for `C:\...\docker` (5 services each `env_file: .env`). Fixed via `_warned_env_files` dedup + generic missing → `debug` (0 visible at WARNING), `required:true` → `warning` deduped to 1. Verified `docker-compose.yaml` 5 services → 0 warnings, `6 candidates → 1 group → 1 meaningful` clean.
-- 2026-09-07: **Windows Input Fix DONE** — `run.py` `os.execv` broke `input()` on Windows (console handle not inherited → cmd tried to execute typed path `'C:\...\docker' is not recognized`). Fixed by switching to `subprocess.call` + `SystemExit` which preserves console for interactive prompts; also made `run.py` robust when `yaml` missing (helpful `run.bat` hint) and updated `HANDOFF`/`README` to recommend `run.bat` on Windows. Verified `python run.py --help` and piped `C:\path\to\YourApp` + `low` + `n` flow.
-- 2026-09-07: **General README + Deterministic Fallback + Simple Start DONE** — `README.md` split into `First Time Setup (one-time)` vs `Running (every time)`, now general purpose (`C:\path\to\YourApp`, `C:\path\to\Blindspot`, no Lekha paths); API-key `echo` removed — CLI now prompts Yes/No every run if no key (Y → paste `sk-or-...`/`AIza...` saved to `.env`, n → deterministic-only JSONs without AI reasoning, banner `Deterministic-Only Mode`); added `run.py`/`run.bat`/`run.sh` simple launchers (`python run.py`); `cli.py` new `_has_api_key`/`_prompt_for_api_key`/`_deterministic_pairs` + `deterministic_only` branch.
-- 2026-09-07: **Repository Sweep — Simple Errors & Edge Cases DONE** — Audited 10 modules; fixes: `__init__.py` missing `placeholder_future_judge` export, `cli.py` fragile `out_dir`/`C:\` root + missing API-key warning + `find_compose` ×4 `rglob` → single scan + parse exception handling, `parser.py` YAML/UTF-8 context + required `env_file` warning, `resolution.py` dead vars, `judge.py` balanced JSON extraction + atomic `cache.json` temp+replace, `report.py` empty boundary, `aggregation.py` truncation warning; 5 documented non-fixes (mongodb multi-host, dual `_decide`, `THINKING_BUDGETS none`, cross-platform `C:` fallback, Windows volume `C:\` colon). 92 tests pass.
-- 2026-09-07: **CLI Interactive Menu DONE** — `cli.py` polished interactive mode (default when no args): banner + absolute `C:\` path validation (exists/is_dir/compose warning, quote stripping, `Ctrl+C` clean) + `low/medium/high` thinking validation (no `none`), runs `run_one_repo` via `auto` provider; advanced flags retained (`--interactive` to force, absolute-path check on batch). `README.md` one-command section replaced with interactive guide.
-- 2026-09-06: **Prompt 2 — Resource-Centric Aggregation, Grouped LLM, Graph/Report Redesign DONE** — `aggregation.py:1` `GroupedEvidencePackage` + `aggregate_evidence_packages` (normalized primary, Unknown not over-merged) + `coupling.py:1` `CouplingGroup/Model` (one per shared resource, services[] + config_evidence + verdict/confidence) + `judge.py` `build_grouped_judge_prompt` + `judge_grouped_packages` (0+1/group, cache on grouped key) + `graph.py` `build_graph_from_groups` (one node per group, one edge per service) + `report.py` `GroupedReportData` (Summary services_analyzed/resource_groups/observations/meaningful_groups, title `Shared PostgreSQL Database Configuration`, conclusion→evidence→technical, no `generic_variable` in body) + `cli.py` grouped pipeline; Cal.com 6 obs →1 group (3 svcs, 2 vars) →1 LLM →1 finding →1 node+3 edges, fixtures 2 groups, 92 tests pass.
-- 2026-09-06: **Tier 1 Redesign — Bounded Resolution + Resource Identity DONE** — `resolution.py:1` etc., 78 tests pass.
-- 2026-09-04: **Stage 7 Report COMPLETE** + CLI `build_report` findings+summary
-- 2026-09-04: **Stage 6 Resource Graph (DATA) COMPLETE** — bipartite `Service ↔ Resource`
-- 2026-09-04: **Stage 5 Dependency Model COMPLETE** — `to_dict` hides `_model`
 
 ---
 

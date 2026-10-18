@@ -67,6 +67,13 @@ from .graph import (
     build_graph_from_groups,
 )
 from .model import Dependency, DependencyModel, build_dependency_model
+from .decision import (
+    Decision,
+    DecisionModel,
+    DecisionRecord,
+    ProcessingStatus,
+    build_decision_model,
+)
 from .coupling import CouplingGroup, CouplingModel, build_coupling_model
 from .aggregation import GroupedEvidencePackage, aggregate_evidence_packages
 from .report import (
@@ -126,6 +133,10 @@ __all__ = [
     "ContextTooLarge",
     "CouplingGroup",
     "CouplingModel",
+    "Decision",
+    "DecisionModel",
+    "DecisionRecord",
+    "ProcessingStatus",
     "Dependency",
     "DependencyModel",
     "EVIDENCE_SCHEMA_VERSION",
@@ -169,6 +180,7 @@ __all__ = [
     "OpenRouterJudgeClient",
     "aggregate_evidence_packages",
     "build_coupling_model",
+    "build_decision_model",
     "build_dependency_model",
     "build_evidence_package",
     "build_evidence_packages",

@@ -18,8 +18,8 @@ Modern software is usually split into multiple small services that work together
 **The problem:** two services can depend on each other without ever directly calling each other. Example: Service A and Service C both silently assume there's a database table called `orders`. Nobody wrote that connection down. If someone renames that table while only thinking about Service A, Service C breaks with zero warning. That's a **hidden dependency**.
 
 **What this tool does:**
-1. **Parse + Normalize** — scans `docker-compose.yml` / `.env` files and converts services, environment configuration, volumes, and image information into a consistent internal representation that preserves traceable references (`DB_HOST=${DB_HOST}` → `.env` → Compose service + image).
-2. **Candidate Discovery** — finds services that share resources or configuration and could therefore be coupled (broad, deterministic — does not decide).
+1. **Parse + Normalize** — scans `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, `compose.yaml`, `docker-compose.json`, `compose.json` / `.env` files and converts services, environment configuration, volumes, and image information into a consistent internal representation that preserves traceable references (`DB_HOST=${DB_HOST}` → `.env` → Compose service + image). Supports multi-file merge (env override, volumes union, `depends_on` union, image latest-wins, sources unioned).
+2. **Candidate Discovery** — finds services that share resources or configuration and could therefore be coupled (broad, deterministic — does not decide). Includes L0 explicit `depends_on` (baseline context) and L1 shared resources: shared env keys, shared named volumes, and cross-variable shared-endpoint identity (same normalized `protocol|host|port|db` via different var names, e.g. `DATABASE_URL` vs `DB_URL`).
 3. **Candidate Filtering** — deterministically filters obvious coincidences (`PORT`, `DEBUG`, `LOG_LEVEL`) and builds **one bounded evidence package per surviving candidate** with resolved context (does value point to a Compose service? which image? internal/external? interpolation/env-file origin + small relevant surrounding config).
 4. **LLM Judge** — for each surviving candidate, one LLM call judges the bounded evidence package → structured `verdict: meaningful|coincidental|uncertain` + `confidence` + `reason` (cached in `cache.json` with candidate+evidence-aware key).
 5. **Dependency Model** — stores confirmed relationships as service-to-resource relationships with evidence, verdict, confidence, and reason.
@@ -194,14 +194,15 @@ This lets the final output explain not only that two services are connected, but
 ## 5. Scope Tiers — This Is the Key Structural Change
 
 **Tier 1 — Must-Have (this is "the project," full stop):**
-- Config parser with traceable references (env var + image + env_file origin) from `docker-compose.yml` / `.env`
+- Config parser with traceable references (env var + image + env_file origin) from `docker-compose.yml|yaml`, `compose.yml|yaml`, `docker-compose.json`, `compose.json` / `.env`; multi-file merge (env override, volumes union, `depends_on` union, image latest-wins, sources unioned)
 - Shared env var + shared volume candidate discovery (broad, deterministic)
+- L0 explicit dependency discovery (`depends_on`, directional, unresolved targets kept) + L1 cross-variable shared-endpoint identity discovery (same normalized `protocol|host|port|db` via different var names)
 - Deterministic candidate filtering (heuristics for obvious noise) + bounded evidence construction with deterministic resolution (service/image/interpolation/related config)
 - LLM judgment layer — 1 call per surviving candidate, structured `verdict/confidence/reason`, `uncertain` allowed, `cache.json` with candidate+evidence-aware keys
 - Dependency model with evidence, verdict, confidence, and reason (service-to-resource)
 - Resource-based graph (`Service ↔ Resource`, not `Service ↔ Service`)
 - Report exposing evidence and confidence
-- Tested against your own synthetic repos (including a deliberate near-miss)
+- Tested against your own synthetic repos (including a deliberate near-miss + stage12_levels fixture for L0/L1)
 - Real-world multi-service repo validation
 
 If you finish only this, you have a complete, working, demoable tool. That's the deliverable you can promise yourself in week 1.
@@ -232,17 +233,22 @@ Rough math: 1-2 hrs/day, realistically not every single day, lands somewhere aro
   - One shared volume coupling
   - One deliberate near-miss (both services define generic `PORT`)
   - Include controlled comments, `${VAR_NAME}` interpolation, `image: postgres:16` for resolution, and external `env_file` usage
+- Add `fixtures/stage12_levels/` fixture: L0 `depends_on`, cross-variable shared-endpoint, generic overlap, unresolved refs, missing targets
 - These are your test fixtures for everything that follows.
 
 ### Phase 2 — Config parser (Tier 1 core)
-- Parse `docker-compose.yml` + `.env` + supported `env_file` imports, extract env vars, volumes, and image per service with traceable references
-- Handle supported `${VAR_NAME}` interpolation and preserve unresolved references
+- Parse `docker-compose.yml|yaml`, `compose.yml|yaml`, `docker-compose.json`, `compose.json` + `.env` + supported `env_file` imports, extract env vars, volumes, image, `depends_on`, and `source_file` per service with traceable references
+- Handle supported `${VAR_NAME}` / `${VAR_NAME:-default}` / `$VAR` interpolation and preserve unresolved references
 - Preserve evidence needed for Stage 3: interpolation source, env-file origin, resolution chain (`DB_HOST=${DB_HOST}` → `.env` → Compose service + image)
+- Multi-file merge: env override, volumes union, `depends_on` union, image latest-wins, sources unioned
 - Validated: messy fixtures parse deterministically
 
 ### Phase 2b — Candidate discovery (Tier 1 core)
 - Broad deterministic pairwise comparison: shared env keys + shared named volumes (ignore bind/anonymous)
+- L0 explicit: `depends_on` (directional, missing targets kept unresolved) — baseline context, not hidden coupling
+- L1 shared-endpoint: cross-variable identity (same normalized `protocol|host|port|db` via different var names, e.g. `DATABASE_URL` vs `DB_URL`); skips pairs already covered by same-key, skips unresolved/unknown
 - Remains broad — `PORT=8000` still produces candidate; filtering decides
+- Deterministic `candidate_id` (sha256-16), `level` (L0/L1), `relationship_type`, `origin`, `resource_identity`, `provenance`; dedup by `(level, type, resource, value, pair)` keeping distinct resources separate
 
 ### Phase 2c — Candidate filtering + bounded evidence construction (Tier 1 core, refined)
 - Deterministic heuristics: standard ports (`80`/`443`/`8080`/`3000`), `DEBUG=1`, logging levels, other generic keys — reduce obvious noise (conceptually `OBVIOUS_NO`/`LOW_SIGNAL` → no LLM, `NEEDS_JUDGMENT`/`HIGH_SIGNAL` → LLM; implementation may simplify but behavior equivalent)
