@@ -267,6 +267,70 @@ python -m pytest -v
 
 ---
 
+## Frontend (Obsidian-style graph explorer)
+
+A local React + TypeScript frontend reads runs from `out/` through a small API server (`api/server.py`, Python stdlib only — no external server dependencies). Nothing is uploaded to a cloud service.
+
+**Status (verified 2026-10-29):** backend tests (174 passing), `npm run typecheck`, `npm run build`, the API endpoints (`/api/runs`, `/api/run?id=`, `POST /api/analyze`), and dev-mode integration (Vite dev server + `/api` proxy) are all verified working. The interactive browser walkthrough (clicks, details panel, minimap) is implemented but has not yet been visually verified in a live browser session.
+
+**Architecture:**
+
+- `api/server.py` — local API on `127.0.0.1:8765` (overridable via `PORT`): lists runs under `out/` (latest versioned `graph.json` + `report.json` pair per run directory), serves a single run's graph + report, triggers the existing CLI on a local repository path (`POST /api/analyze`), and serves static files from `frontend/dist` for production-style use.
+- `frontend/src/App.tsx` — app shell: sidebar run list, two tabs (dependency graph default / analyze), loading, error, and empty states, URL parameters (`?run=<id>`, `?select=<node|edge id>`, `?view=analyze`).
+- `frontend/src/graph/layout.ts` — deterministic dagre left-to-right layout; edge styling by classification: explicit (grey), `potential_hidden` (yellow), `uncertain` (dashed), `rejected` (dotted, hidden behind a "Show rejected" toggle).
+- `frontend/src/components/GraphView.tsx` — React Flow canvas (`@xyflow/react`) with Controls, MiniMap, dot Background, legend, and node/edge/pane click handling.
+- `frontend/src/components/FlowNodes.tsx` — custom service and resource nodes (distinct visual treatment; `Service ↔ Resource`, never implying a direct call).
+- `frontend/src/components/DetailsPanel.tsx` — side panel with service/resource/edge details: evidence, resolution chains, confidence bars, and Stage 5 decision cards.
+- `frontend/src/components/AnalyzeTab.tsx` — local repository path (persisted in `localStorage`), LLM thinking level selector, run output/stderr display, and the existing-runs list.
+- `frontend/src/types.ts` — TypeScript types mirroring the backend payload contract (`classification`, `DecisionView`, decision summaries).
+
+**Dependencies added:** `react`/`react-dom` 19, `@xyflow/react` 12.8, `@dagrejs/dagre` 1.1, `lucide-react`, Vite 6, TypeScript 5.7 (`package.json`).
+
+**One-click start (recommended):**
+
+```bash
+# Windows — double-click, or:
+start_ui.bat
+# macOS / Linux / Git Bash:
+bash start_ui.sh
+```
+
+This starts the local API, starts the frontend, opens the browser automatically (http://localhost:5173 by default; frontend npm packages install themselves on first run), and stops everything on Ctrl+C. `start_ui.bat --build` instead builds `frontend/dist` and serves it via the API alone at http://127.0.0.1:8765.
+
+**Manual development (two terminals):**
+
+```bash
+# Terminal 1 — local API on 127.0.0.1:8765
+.venv\Scripts\python.exe api\server.py
+
+# Terminal 2 — Vite dev server on http://localhost:5173 (proxies /api to the API)
+cd frontend
+npm install
+npm run dev
+```
+
+**Type-check / production-style local build:**
+
+```bash
+cd frontend
+npm run typecheck
+npm run build
+cd ..
+.venv\Scripts\python.exe api\server.py
+# open http://127.0.0.1:8765 (serves frontend/dist + /api)
+```
+
+The app has two tabs:
+
+- **Dependency graph** (default) — explicit `depends_on` relationships (grey) and potential hidden resource-mediated couplings (yellow, dashed for uncertain) in one graph. Click any service, resource, or edge for its evidence, confidence, and decision reasoning.
+- **Analyze repository** — enter a local repository path and run the existing CLI pipeline via the local API. If no LLM key is configured, the run continues in deterministic-only mode.
+
+Optional URL parameters: `?run=shared_env`, `?select=resource:env_var:DB_HOST=shared-db`, `?view=analyze`.
+
+**Known limitations / remaining work:** no frontend unit tests yet; interactive browser behavior not yet visually verified; no source-code analysis (out of Tier 1 scope).
+
+---
+
 ## Graph DATA Contract — React Flow Ready
 
 Stage 6 produces provider-agnostic data, not an image. Frontend handles layout/zoom/pan/selection/evidence panels.
@@ -287,7 +351,8 @@ Stage 6 produces provider-agnostic data, not an image. Frontend handles layout/z
 }
 ```
 
-* Bipartite `Service → Resource` only (`calcom → postgresql|${database_host}||${POSTGRES_DB} ← calcom-api, studio`), never `service→service`.
+* Potential hidden couplings remain resource-based: `calcom → postgresql|${database_host}||${POSTGRES_DB} ← calcom-api, studio`, never a hidden `service→service` edge. Hidden edges carry `classification: "potential_hidden" | "uncertain" | "rejected"`, `relationship_type`, `semantics: "resource_mediated"`, `origin`, and `confidence`.
+* Explicit Compose `depends_on` is the only allowed `service→service` edge: `classification: "explicit"`, `semantics: "startup_dependency"`, `origin: "compose:depends_on"`, `target_resolved`, and **no confidence or LLM decision**.
 * Grouped: one resource node per shared resource identity (normalized), one edge per service in group (Cal.com 3 services → 1 node + 3 edges, not 6 findings → 6 edges). Dedup by `grouping_key` (`env_var:postgresql|...`), credentials stripped, deterministic `sorted` IDs, `networkx` optional internally. Graph consumes `CouplingModel`, not pairwise `DependencyModel`.
 
 ---
@@ -395,6 +460,9 @@ Conclusion first, evidence second, technical internals last. No `generic_variabl
 Blindspot/
 ├── AGENTS.md, PROJECT_PLAN.md, STATE.md, DECISIONS.md, HANDOFF.md
 ├── .env (keys, gitignored), cache.json (gitignored), out/<repo>/ (reports, gitignored)
+├── api/server.py (local API: run listing/loading from out/, POST /api/analyze wedge into the CLI, static frontend/dist hosting; stdlib only)
+├── start_ui.py + start_ui.bat + start_ui.sh (one-click UI launcher: starts API + frontend, auto-installs npm deps on first run, opens the browser, Ctrl+C stops everything; `--build` serves frontend/dist via the API only)
+├── frontend/ (Vite + React 19 + TS; src/App.tsx, api.ts, types.ts, graph/layout.ts, components/{GraphView,FlowNodes,DetailsPanel,AnalyzeTab}.tsx, styles.css; dist/ prebuilt, gitignored)
 ├── fixtures/ (shared_env, shared_volume, near_miss, stage12_levels)  # !fixtures/**/.env tracked
 ├── src/blindspot/
 │   ├── inputs.py (adapter boundary: SUPPORTED_COMPOSE_FILENAMES 4 YAML + 2 JSON, load_compose_document, discover/find_compose_file; K8s/Terraform explicitly unsupported)
@@ -406,10 +474,10 @@ Blindspot/
 │   ├── coupling.py (CouplingGroup, CouplingModel — resource-centric, one per shared resource)
 │   ├── judge.py (JudgeResult, Gemini/OpenRouter, build_judge_prompt + build_grouped_judge_prompt, cache.json grouped, llm_calls/cache_hits)
 │   ├── model.py (Dependency, DependencyModel — pairwise kept for tests, model hidden)
-│   ├── graph.py (GraphNode/Edge/Data, build_graph + build_graph_from_groups, dedup by normalized_identity/grouping_key)
-│   ├── report.py (ReportFinding/Data + GroupedReportFinding/Data, build_report + build_grouped_report — now with application/inputs/analysis + Analysis input/Pipeline summary + zero-result explanations)
+│   ├── graph.py (GraphNode/Edge/Data, build_graph + build_graph_from_groups — unified: L0 explicit service→service edges + L1 hidden service→resource edges with decision summaries, dedup by normalized_identity/grouping_key)
+│   ├── report.py (ReportFinding/Data + GroupedReportFinding/Data, build_report + build_grouped_report — explicit_relationships separate from hidden findings, decision cards in JSON/Markdown, application/inputs/analysis + Analysis input/Pipeline summary + zero-result explanations)
 │   └── cli.py (interactive: absolute C:\ + low/medium/high + input source tracking + full pipeline accounting + versioned history)
-└── tests/ (test_parser 32, test_discovery 8, test_filtering 8, test_graph 13, test_resolution 17, test_grouping 14, test_accounting 6, test_audit 21, test_stage12 12 → 131 green, hermetic)
+└── tests/ (test_parser 32, test_discovery 8, test_filtering 8, test_graph 13, test_resolution 17, test_grouping 14, test_accounting 6, test_audit 21, test_stage12 12, test_decision 18, test_stage34 18, test_unified_graph 7 → 174 green, hermetic)
 ```
 
 ## Input Formats & Dependency Levels (Stage 1+2)

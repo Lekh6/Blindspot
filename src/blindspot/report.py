@@ -348,9 +348,30 @@ class GroupedReportFinding:
     verdict: str
     confidence: float
     reason: str
+    # Unified relationship metadata (backward-compatible additions)
+    classification: str = "potential_hidden"
+    relationship_type: str = ""
+    semantics: str = "resource_mediated"
+    origin: str = ""
+    decisions: Tuple[Dict[str, Any], ...] = ()
+    decision_summary: Optional[Dict[str, Any]] = None
 
     @classmethod
-    def from_group(cls, group: Any) -> "GroupedReportFinding":
+    def from_group(
+        cls,
+        group: Any,
+        decisions: Tuple[Dict[str, Any], ...] = (),
+        decision_summary: Optional[Dict[str, Any]] = None,
+    ) -> "GroupedReportFinding":
+        from .graph import RELATIONSHIP_ORIGINS, RELATIONSHIP_TYPES, VERDICT_CLASSIFICATIONS
+
+        classification = VERDICT_CLASSIFICATIONS.get(group.verdict, "uncertain")
+        if decision_summary and decision_summary.get("overall"):
+            from .graph import DECISION_CLASSIFICATIONS
+
+            classification = DECISION_CLASSIFICATIONS.get(
+                decision_summary["overall"], classification
+            )
         return cls(
             title=_human_title(group),
             resource_identity=group.resource_identity,
@@ -368,6 +389,12 @@ class GroupedReportFinding:
             verdict=group.verdict,
             confidence=float(group.confidence),
             reason=group.reason.strip(),
+            classification=classification,
+            relationship_type=RELATIONSHIP_TYPES.get(group.resource_type, group.resource_type) or "",
+            semantics="resource_mediated",
+            origin=RELATIONSHIP_ORIGINS.get(group.resource_type, "unknown"),
+            decisions=decisions,
+            decision_summary=decision_summary,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -388,6 +415,12 @@ class GroupedReportFinding:
             "verdict": self.verdict,
             "confidence": self.confidence,
             "reason": self.reason,
+            "classification": self.classification,
+            "relationship_type": self.relationship_type,
+            "semantics": self.semantics,
+            "origin": self.origin,
+            "decisions": list(self.decisions),
+            "decision_summary": dict(self.decision_summary) if self.decision_summary else None,
         }
 
 
@@ -403,6 +436,8 @@ class GroupedReportData:
     application: Optional[Dict[str, Any]] = None
     inputs: Optional[Dict[str, Any]] = None
     analysis: Optional[Dict[str, Any]] = None
+    explicit_relationships: Tuple[Dict[str, Any], ...] = ()
+    decisions: Tuple[Dict[str, Any], ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
@@ -417,6 +452,8 @@ class GroupedReportData:
         d["summary"] = dict(self.summary)
         d["graph_summary"] = dict(self.graph_summary) if self.graph_summary else None
         d["generated_at"] = self.generated_at
+        d["explicit_relationships"] = [dict(r) for r in self.explicit_relationships]
+        d["decisions"] = [dict(r) for r in self.decisions]
         d["findings"] = [f.to_dict() for f in self.findings]
         return d
 
@@ -499,6 +536,17 @@ class GroupedReportData:
             if judgment.get("cache_hits") is not None:
                 lines.append(f"- Cache hits: {judgment.get('cache_hits', 0)}")
         lines.append(f"- Meaningful couplings: {meaningful}")
+        lines.append(f"- Explicitly configured relationships: {len(self.explicit_relationships)}")
+        if self.decisions:
+            dec_counts = {"potential_dependency": 0, "review": 0, "insufficient_evidence": 0}
+            for d in self.decisions:
+                key = d.get("decision")
+                if key in dec_counts:
+                    dec_counts[key] += 1
+            lines.append(
+                f"- Decisions: potential={dec_counts['potential_dependency']}, "
+                f"review={dec_counts['review']}, insufficient={dec_counts['insufficient_evidence']}"
+            )
         lines.append("")
         if s.get('coincidental_groups', 0) or s.get('uncertain_groups', 0):
             lines.append(f"Coincidental groups: {s.get('coincidental_groups', 0)}")
@@ -508,8 +556,30 @@ class GroupedReportData:
         lines.append(f"- Nodes: {nodes}")
         lines.append(f"- Edges: {edges}")
         lines.append("")
-        # Explanations for legitimate zero-result runs (prompt §7-9)
-        if services_cnt and services_cnt > 0 and raw_candidates == 0 and observations == 0 and resource_groups == 0:
+        # Explicit relationships are configuration facts, not hidden-coupling findings.
+        if self.explicit_relationships:
+            lines.append("## Explicitly configured relationships")
+            lines.append("")
+            lines.append(
+                "These relationships are declared in Compose configuration. "
+                "`depends_on` expresses startup ordering and does not prove runtime application usage."
+            )
+            lines.append("")
+            for rel in self.explicit_relationships:
+                target_state = "resolved" if rel.get("target_resolved") else "unresolved target"
+                lines.append(
+                    f"- `{rel.get('source')}` → `{rel.get('target')}` — "
+                    f"{rel.get('semantics', 'startup_dependency')} ({target_state})"
+                )
+                if rel.get("evidence"):
+                    lines.append(f"  - Evidence: {rel['evidence']}")
+                if rel.get("provenance"):
+                    lines.append(f"  - Source: {rel['provenance']}")
+            lines.append("")
+        # Explanations for legitimate zero-result runs (prompt A7-9)
+        if (services_cnt and services_cnt > 0 and raw_candidates == 0
+                and observations == 0 and resource_groups == 0
+                and not self.explicit_relationships):
             lines.append("## Result")
             lines.append("")
             lines.append(f"BlindSpot successfully parsed {services_cnt} services and {named_vol_cnt} named volume{'s' if named_vol_cnt != 1 else ''}.")
@@ -518,7 +588,7 @@ class GroupedReportData:
             lines.append("")
             lines.append("This does not mean the services have no dependencies. It means the available Tier 1 configuration evidence did not establish a shared resource relationship for further analysis.")
             lines.append("")
-        elif raw_candidates and raw_candidates > 0 and observations == 0:
+        elif raw_candidates and raw_candidates > 0 and observations == 0 and not self.explicit_relationships:
             lines.append("## Result")
             lines.append("")
             lines.append("Candidates were generated from the configuration, but none survived deterministic filtering as meaningful shared-resource evidence.")
@@ -526,7 +596,8 @@ class GroupedReportData:
             if filtered_out:
                 lines.append(f"Candidates removed by deterministic filtering: {filtered_out}")
                 lines.append("")
-        elif observations and resource_groups and observations > resource_groups:
+        elif (observations and resource_groups and observations > resource_groups
+              and not self.explicit_relationships):
             lines.append("## Result")
             lines.append("")
             lines.append(f"{observations} configuration observations were grouped into {resource_groups} shared resource relationship{'s' if resource_groups != 1 else ''}.")
@@ -557,6 +628,11 @@ class GroupedReportData:
             elif raw_candidates == 0 and observations == 0:
                 # Already explained above, keep generic but distinguish from parsing failure
                 lines.append("_No Tier 1 candidates generated — no supported shared-resource configuration evidence found._")
+            elif self.explicit_relationships:
+                lines.append(
+                    "_No potential hidden coupling groups were reported. "
+                    "Only explicitly configured relationships are shown above._"
+                )
             else:
                 lines.append("_No meaningful coupling groups found — all candidates were filtered as generic or judged coincidental/uncertain._")
             lines.append("")
@@ -580,6 +656,48 @@ class GroupedReportData:
             lines.append("")
             lines.append(f"**Reason:** {f.reason}")
             lines.append("")
+            if f.decisions or f.decision_summary:
+                lines.append("### Stage 5 decision")
+                lines.append("")
+                if f.decision_summary:
+                    summary = f.decision_summary
+                    counts = summary.get("counts", {})
+                    lines.append(
+                        f"Outcome: `{summary.get('overall') or 'none'}` — "
+                        f"potential={counts.get('potential_dependency', 0)}, "
+                        f"review={counts.get('review', 0)}, "
+                        f"insufficient={counts.get('insufficient_evidence', 0)}"
+                    )
+                    lines.append("")
+                for decision in f.decisions:
+                    lines.append(
+                        f"- `{decision.get('candidate_id')}` — "
+                        f"{decision.get('decision')} "
+                        f"(processing: {decision.get('processing_status')})"
+                    )
+                    if decision.get("stage4_verdict") is not None:
+                        lines.append(
+                            f"  - Stage 4: {decision.get('stage4_verdict')} "
+                            f"({float(decision.get('stage4_confidence', 0.0)):.2f})"
+                        )
+                    if decision.get("rationale"):
+                        lines.append(f"  - Rationale: {decision.get('rationale')}")
+                    if decision.get("policy_rules_applied"):
+                        lines.append(
+                            "  - Policy: "
+                            + ", ".join(str(r) for r in decision["policy_rules_applied"])
+                        )
+                    if decision.get("missing_information"):
+                        lines.append(
+                            "  - Missing: "
+                            + ", ".join(str(m) for m in decision["missing_information"])
+                        )
+                    if decision.get("counter_evidence_references"):
+                        lines.append(
+                            "  - Counter-evidence: "
+                            + ", ".join(str(c) for c in decision["counter_evidence_references"])
+                        )
+                lines.append("")
             # Why this matters
             lines.append("### Why this matters")
             lines.append("")
@@ -645,28 +763,66 @@ class GroupedReportData:
         return "\n".join(lines)
 
 
+def _decisions_for_group(group: Any, index: Dict[str, Any]) -> Tuple[Tuple[Dict[str, Any], ...], Optional[Dict[str, Any]]]:
+    from .graph import decision_public_view, summarize_decision_views
+
+    grouped_package = getattr(group, "grouped_package", None)
+    observations = getattr(grouped_package, "observations", ()) if grouped_package else ()
+    views = []
+    for observation in observations:
+        cid = getattr(observation, "candidate_id", None)
+        if cid and str(cid) in index:
+            views.append(decision_public_view(index[str(cid)]))
+    views.sort(key=lambda v: (v["service_a"], v["service_b"], v["candidate_id"]))
+    summary = summarize_decision_views(views) if views else None
+    return tuple(views), summary
+
+
 def build_grouped_report(
     model: Any,  # CouplingModel
     graph_data: Optional[Dict[str, Any]] = None,
     meaningful_only: bool = True,
     total_services: Optional[int] = None,
     accounting: Optional[Dict[str, Any]] = None,
+    decisions: Any = None,  # DecisionModel or iterable[DecisionRecord]
 ) -> GroupedReportData:
     """Build grouped report from CouplingModel.
 
-    Summary distinguishes: services_analyzed, resource_groups, observations, meaningful_groups, etc.
-    total_services: total services parsed from compose (if provided, used for services_analyzed;
-        otherwise falls back to union of services in groups for backward compat).
-    accounting: optional precomputed analysis accounting from CLI (prompt §1-5).
-        If provided, its parsed/discovery/aggregation/judgment/graph counts are used for
-        the new top-level analysis fields, ensuring report reflects real pipeline objects.
+    Explicit L0 relationships are reported separately as configuration facts.
+    Hidden shared-resource groups are reported as potential coupling findings.
+    Stage 5 decisions are included per finding when supplied.
     """
-    # For summary, need observations count across all groups (including coincidental)
+    from .graph import explicit_relationships_from_groups
+
     all_groups = list(model.groups) if hasattr(model, "groups") else []
-    displayed_groups = list(model.meaningful_only().groups) if meaningful_only and hasattr(model, "meaningful_only") else all_groups
+    explicit_groups = [g for g in all_groups if g.resource_type == "service_dependency"]
+    hidden_all = [g for g in all_groups if g.resource_type != "service_dependency"]
+
+    if meaningful_only:
+        displayed_groups = [g for g in hidden_all if g.verdict == "meaningful"]
+    else:
+        displayed_groups = hidden_all
     displayed_groups = sorted(displayed_groups, key=lambda g: g.grouping_key)
 
-    findings = tuple(GroupedReportFinding.from_group(g) for g in displayed_groups)
+    # Decision lookup by candidate ID (explicit decisions are intentionally unused).
+    decision_records = getattr(decisions, "decisions", decisions)
+    decision_index: Dict[str, Any] = {}
+    for record in decision_records or ():
+        cid = getattr(record, "candidate_id", None)
+        if cid:
+            decision_index[str(cid)] = record
+
+    findings_list: List[GroupedReportFinding] = []
+    for group in displayed_groups:
+        views, group_decision_summary = _decisions_for_group(group, decision_index)
+        findings_list.append(
+            GroupedReportFinding.from_group(
+                group, decisions=views, decision_summary=group_decision_summary
+            )
+        )
+    findings = tuple(findings_list)
+
+    explicit_relationships = tuple(explicit_relationships_from_groups(explicit_groups))
 
     # Services analyzed: prefer total_services from Project, else union across groups
     if total_services is not None:
@@ -677,23 +833,32 @@ def build_grouped_report(
             all_services.update(g.services)
         services_analyzed = len(all_services)
 
-    observations_total = sum(g.evidence_count for g in all_groups)
+    observations_total = sum(g.evidence_count for g in hidden_all)
+
+    # Top-level decision records for hidden candidates only.
+    all_decision_views: List[Dict[str, Any]] = []
+    for group in hidden_all:
+        views, _ = _decisions_for_group(group, decision_index)
+        all_decision_views.extend(views)
+    all_decision_views.sort(key=lambda v: (v["service_a"], v["service_b"], v["candidate_id"]))
 
     summary: Dict[str, Any] = {
         "services_analyzed": services_analyzed,
         "services": services_analyzed,  # alias for backward compat
-        "resource_groups": len(all_groups),
+        "resource_groups": len(hidden_all),
         "observations": observations_total,
-        "meaningful_groups": len([g for g in all_groups if g.verdict == "meaningful"]),
-        "coincidental_groups": len([g for g in all_groups if g.verdict == "coincidental"]),
-        "uncertain_groups": len([g for g in all_groups if g.verdict == "uncertain"]),
+        "meaningful_groups": len([g for g in hidden_all if g.verdict == "meaningful"]),
+        "coincidental_groups": len([g for g in hidden_all if g.verdict == "coincidental"]),
+        "uncertain_groups": len([g for g in hidden_all if g.verdict == "uncertain"]),
+        "explicit_relationships": len(explicit_relationships),
+        "potential_hidden_groups": len([g for g in hidden_all if g.verdict == "meaningful"]),
         # legacy aliases
-        "total": len(all_groups),
-        "meaningful": len([g for g in all_groups if g.verdict == "meaningful"]),
-        "coincidental": len([g for g in all_groups if g.verdict == "coincidental"]),
-        "uncertain": len([g for g in all_groups if g.verdict == "uncertain"]),
+        "total": len(hidden_all),
+        "meaningful": len([g for g in hidden_all if g.verdict == "meaningful"]),
+        "coincidental": len([g for g in hidden_all if g.verdict == "coincidental"]),
+        "uncertain": len([g for g in hidden_all if g.verdict == "uncertain"]),
         "reported": len(findings),
-        "resources": len(all_groups),
+        "resources": len(hidden_all),
     }
 
     graph_summary: Optional[Dict[str, Any]] = None
@@ -705,39 +870,51 @@ def build_grouped_report(
             "edges": len(edges),
             "service_nodes": len([n for n in nodes if n.get("type") == "service"]),
             "resource_nodes": len([n for n in nodes if n.get("type") == "resource"]),
+            "explicit_edges": len([e for e in edges if e.get("data", {}).get("classification") == "explicit"]),
+            "hidden_edges": len([e for e in edges if e.get("data", {}).get("classification") != "explicit"]),
         }
 
-    # Build new accounting fields (prompt §5) from passed accounting or fallback to summary
     if accounting is not None:
-        # Use provided accounting (from CLI) for top-level application/inputs/analysis
         application = {"root": accounting.get("application_root", "")}
         inputs = {"sources_used": accounting.get("sources", {}).get("used", [])}
-        # Also include discovered/parsed counts if available for debugging
         if "sources" in accounting:
             inputs["discovered"] = accounting["sources"].get("discovered", [])
             inputs["successfully_parsed"] = accounting["sources"].get("successfully_parsed", [])
+        aggregation = dict(accounting.get("aggregation", {}))
+        aggregation["resource_groups"] = len(hidden_all)
+        aggregation["explicit_relationships"] = len(explicit_relationships)
         analysis = {
             "parsed": accounting.get("parsed", {"services": services_analyzed, "named_volumes": 0}),
             "discovery": accounting.get("discovery", {"raw_candidates": 0, "observations": observations_total}),
-            "aggregation": accounting.get("aggregation", {"resource_groups": len(all_groups)}),
-            "judgment": accounting.get("judgment", {"groups_judged": len(all_groups), "meaningful": summary["meaningful_groups"], "coincidental": summary["coincidental_groups"], "uncertain": summary["uncertain_groups"]}),
+            "aggregation": aggregation,
+            "judgment": accounting.get("judgment", {"groups_judged": len(hidden_all), "meaningful": summary["meaningful_groups"], "coincidental": summary["coincidental_groups"], "uncertain": summary["uncertain_groups"]}),
             "graph": accounting.get("graph", {"nodes": graph_summary["nodes"] if graph_summary else 0, "edges": graph_summary["edges"] if graph_summary else 0}),
         }
+        if "decision" in accounting:
+            decision_counts = dict(accounting["decision"])
+            decision_counts["explicit_relationships"] = len(explicit_relationships)
+            analysis["decision"] = decision_counts
     else:
-        # Fallback for tests / direct calls without CLI accounting
         application = None
         inputs = None
-        # Synthesize minimal analysis from summary for backward compat
         analysis = {
             "parsed": {"services": services_analyzed, "named_volumes": 0},
             "discovery": {"raw_candidates": summary.get("raw_candidates", 0), "observations": observations_total},
-            "aggregation": {"resource_groups": len(all_groups)},
-            "judgment": {"groups_judged": len(all_groups), "meaningful": summary["meaningful_groups"], "coincidental": summary["coincidental_groups"], "uncertain": summary["uncertain_groups"]},
+            "aggregation": {
+                "resource_groups": len(hidden_all),
+                "explicit_relationships": len(explicit_relationships),
+            },
+            "judgment": {"groups_judged": len(hidden_all), "meaningful": summary["meaningful_groups"], "coincidental": summary["coincidental_groups"], "uncertain": summary["uncertain_groups"]},
             "graph": {"nodes": graph_summary["nodes"] if graph_summary else 0, "edges": graph_summary["edges"] if graph_summary else 0},
         }
-        # Only include if we have at least some data; for empty reports keep None to avoid breaking old tests that check exact keys
-        # But we want to ensure new fields are present even for fallback, so we keep them
-        # For backward compat, if no accounting was provided, we still want to provide analysis for new tests
-        # So we keep analysis
 
-    return GroupedReportData(findings=findings, summary=summary, graph_summary=graph_summary, application=application, inputs=inputs, analysis=analysis)
+    return GroupedReportData(
+        findings=findings,
+        summary=summary,
+        graph_summary=graph_summary,
+        application=application,
+        inputs=inputs,
+        analysis=analysis,
+        explicit_relationships=explicit_relationships,
+        decisions=tuple(all_decision_views),
+    )

@@ -15,10 +15,6 @@ Supported (tested):
   - .env next to compose file, service-level env_file (string/list/{path,required})
   - environment mapping + list syntax, ${VAR}/${VAR:-default}/$VAR, unresolved preserved
   - multi-file merge (docker compose -f a -f b): env override, volumes union, image override
-
-Explicitly unsupported (not implemented in this task):
-  - Kubernetes YAML, Terraform/HCL (possible future adapters, not built here)
-  - Remote URLs, non-mapping top-level documents, non-Compose JSON shapes
 """
 
 from __future__ import annotations

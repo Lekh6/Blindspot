@@ -2,9 +2,9 @@
 
 > Single source of truth for where BlindSpot stands. Update this file on every meaningful change.
 
-**Last Updated:** 2026-10-12 (D-044 Stage 1+2 Enhancement)
-**Branch:** `main` — working tree: Tier 1 **FROZEN** (Stages 1–7 done, audited, 131 tests green) + D-044 Stage 1+2 enhancement done (input adapters + L0/L1 discovery) + Tier 2 **PROPOSAL ONLY** (D-039, no implementation)
-**Status:** `TIER 1 AUDITED + D-044 ENHANCEMENT` — audit complete (Workstream A done); D-044 adds input adapters (4 YAML + 2 JSON), L0 `depends_on`, L1 cross-variable shared-endpoint identity, multi-file merge; tests: 131 passed (119 existing + 12 new `test_stage12.py`). Next: Workstream B multi-repo validation + ground truth, then evidence-based fixes. After validation: deepen toward L2 (table) per D-043 (directional, not final). Kubernetes/source-runtime deferred; evidence tiers + honest claims required
+**Last Updated:** 2026-10-29 (Unified Stage 6/7 + Frontend verified)
+**Branch:** `main` — working tree: Tier 1 + unified explicit/hidden graph/report + React Flow frontend + local API server; 174 tests green (verified 2026-10-29); Kubernetes out of scope
+**Status:** `STAGE 6/7 UNIFIED + FRONTEND DONE` — Stage 6 now emits explicit `depends_on` as `service → service` (`classification: explicit`, no confidence/LLM decision) plus potential hidden `service → resource` edges (`potential_hidden`/`uncertain`/`rejected`) with decision summaries. Stage 7 separates explicit relationships from hidden findings. `frontend/` is a Vite + React + TS Obsidian-style graph explorer backed by `api/server.py`. Verification 2026-10-29: `pytest` 174 passed; `npm run typecheck` clean; `npm run build` clean; API endpoints (`/api/runs`, `/api/run`, `POST /api/analyze`) exercised live. Browser-level interaction (click/panel/minimap) is implemented but not yet verified in a live browser session. Next: real-world validation and evidence-based fixes. Findings remain potential coupling with evidence + confidence
 
 ---
 
@@ -15,11 +15,11 @@
 | **Repo Init** | `git` on `main`, `AGENTS.md` 530+ LOC + `PROJECT_PLAN.md` 310+ LOC (hybrid spec + D-044) |
 | **Architecture Doc** | `AGENTS.md` = hybrid deterministic + LLM (§3 bounded evidence with `internal/external_confirmed/partial/unresolved` + identity `exact/config/unknown`, §4 one call/candidate, confidence mandatory, §6 React Flow DATA + normalized_identity dedup) + provider-agnostic + D-044 L0/L1 discovery |
 | **Global Config** | `~/.config/opencode/opencode.jsonc` model `opencode/muse-spark-1.2-contributor-free` |
-| **Codebase** | `parser.py` (Service.image/depends_on/source_file, Project.sources, multi-file merge) + `inputs.py` 119 LOC (adapter boundary: `SUPPORTED_COMPOSE_FILENAMES` 4 YAML + 2 JSON, `load_compose_document`, `discover/find_compose_file`) + `discovery.py` 387 LOC (Candidate `candidate_id/level/relationship_type/origin/resource_identity/provenance`; L0 `depends_on` + L1 `shared_env`/`shared_volume`/`shared_endpoint`) + `filtering.py` 875 LOC + `resolution.py` 607 LOC + `aggregation.py` 200 LOC + `coupling.py` 150 LOC + `judge.py` 1050 LOC + `model.py` 265 LOC + `graph.py` 350 LOC + `report.py` 550 LOC + `cli.py` ~750 LOC + `context.py` + `context_judge.py` + `decision.py` + `secrets.py` + `run.py`/`run.bat`/`run.sh` |
+| **Codebase** | `parser.py` (Service.image/depends_on/source_file, Project.sources, multi-file merge) + `inputs.py` 119 LOC (4 YAML + 2 JSON adapters) + `discovery.py` 387 LOC (L0/L1) + `filtering.py` 875 LOC + `resolution.py` 607 LOC + `aggregation.py` 266 LOC + `context.py` 551 LOC + `context_judge.py` 426 LOC + `judge.py` 1394 LOC (contextual primary) + `coupling.py` 232 LOC + `decision.py` 602 LOC + `model.py` 285 LOC + `graph.py` 691 LOC (unified explicit + hidden edges) + `report.py` 996 LOC (explicit relationships + hidden findings + decisions) + `cli.py` ~920 LOC + `secrets.py` + `run.py`/`run.bat`/`run.sh` + `start_ui.py`/`start_ui.bat`/`start_ui.sh` (one-click UI launcher) + `api/server.py` (runs listing/load + analyze trigger, serves `frontend/dist`) + `frontend/` (Vite + React 19 + TS + `@xyflow/react`) |
 | **Fixtures** | 4 fixture dirs: `shared_env`, `shared_volume`, `near_miss`, `stage12_levels` (L0 + cross-var endpoint + generic + unresolved + missing target) |
-| **Tests** | **131 passed** (`test_parser` 32 + `test_discovery` 8 + `test_filtering` 8 + `test_graph` 13 + `test_resolution` 17 + `test_grouping` 14 + `test_accounting` 6 + `test_audit` 21 + `test_stage12` 12) — hermetic, no network |
-| **Dev env** | `.venv` rebuilt 2026-09-28 (Python 3.12.10) + `requirements.txt` + pytest; `python run.py --help` verified |
-| **Docs** | `STATE.md`/`HANDOFF.md`/`DECISIONS.md`/`README.md` refreshed 2026-10-12 (D-044: input adapters, L0/L1, multi-file merge, 12 new tests) |
+| **Tests** | **174 passed** (`test_parser` 32 + `test_discovery` 8 + `test_filtering` 8 + `test_graph` 13 + `test_resolution` 17 + `test_grouping` 14 + `test_accounting` 6 + `test_audit` 21 + `test_stage12` 12 + `test_decision` 18 + `test_stage34` 18 + `test_unified_graph` 7) — hermetic, no network; verified 2026-10-29 |
+| **Dev env** | `.venv` rebuilt 2026-09-28 (Python 3.12.10) + `requirements.txt` + pytest; `python run.py --help` verified; frontend `node_modules` installed, `npm run typecheck` + `npm run build` verified 2026-10-29 |
+| **Docs** | `STATE.md`/`HANDOFF.md`/`README.md` refreshed 2026-10-29 (unified Stage 6/7 + frontend); D-044 records Stage 1+2, D-045 records Stage 4/5, D-046 records frontend + stdlib API + one-click launcher |
 | **Gitignore** | `!fixtures/**/.env` + `!fixtures/**/common.env` + `cache.json` + `.env` + `out/` / `report.json` / `report.md` ignored |
 
 ---
@@ -31,13 +31,13 @@
 | 1 | **Parse + Normalize** | `Done` | `parser.py` + `inputs.py` adapter: 4 YAML + 2 JSON, `Service.image/depends_on/source_file`, `Project.sources`, multi-file merge, traceable refs |
 | 2 | **Candidate Discovery** | `Done` | `discovery.py`: `Candidate` with `candidate_id/level/relationship_type/origin/resource_identity/provenance`; L0 `depends_on` + L1 `shared_env`/`shared_volume`/`shared_endpoint` (cross-var identity), deterministic dedup/sort |
 | 3 | **Filtering + Resolution + Aggregation** | `Done` | `resolution.py` `bounded_resolve` + `aggregation.py` `aggregate_evidence_packages` (group by `normalized_identity`) — L0 fast-path `internal/unresolved` + endpoints `internal/external_confirmed` |
-| 4 | **LLM Judge (Grouped)** | `Done` | `judge.py` `build_grouped_judge_prompt` + `judge_grouped_packages` `0+1/group`, cache `groups_judged` vs `llm_calls`/`cache_hits` accounting |
-| 5 | **Coupling Model** | `Done` | `coupling.py` `CouplingGroup` — one per shared resource, Graph+Report consume same |
-| 6 | **Graph (Grouped)** | `Done` | `graph.py` `_resource_key` + `build_graph_from_groups` — L0 as `resource:service_dependency:*` nodes, bipartite |
-| 7 | **Report (Grouped)** | `Done` | `report.py` `GroupedReportData` `application`/`inputs`/`analysis` + `Analysis input`/`Pipeline summary` + zero-result explanations |
+| 4 | **LLM Judge (Contextual)** | `Done` | `context.py` bounded investigation contexts + `context_judge.py` validation/cache + `judge.py` `judge_contextual` (one call per context, per-candidate verdicts); grouped judge retained as fallback |
+| 5 | **Coupling + Decision Model** | `Done` | `coupling.py` `CouplingGroup`/`CouplingModel` (one per shared resource) + `decision.py` `DecisionRecord`/`DecisionModel` (deterministic policy → `potential_dependency`/`insufficient_evidence`/`review`, processing status, versioned policy) |
+| 6 | **Graph (Unified)** | `Done` | `graph.py` `build_graph_from_groups`: L0 `depends_on` as **direct `service → service` edges** (`classification: explicit`, `semantics: startup_dependency`, no confidence/decision) + L1 couplings as `service → resource` edges (`potential_hidden`/`uncertain`/`rejected`, decision summaries on nodes, confidence on hidden edges, model hidden) — `decisions=` param added |
+| 7 | **Report (Unified)** | `Done` | `report.py` `build_grouped_report(decisions=…)`: `explicit_relationships[]` separate from `findings[]` (hidden only); findings carry `classification`, `decisions`, decision summary; Markdown renders "Explicitly configured relationships" + "Stage 5 decision" sections |
 
-**Overall Tier 1:** **100% (code) + D-044 enhancement — FROZEN** (change only for concrete bugs/validation). Findings are potential shared-resource coupling signals, not runtime proof (D-038).
-**Tier 2 (Kubernetes):** `PROPOSAL ONLY — NO IMPLEMENTATION` — D-039 defines the approval gate: K8s must demonstrate key-level/indirect coupling Tier 1 cannot find (same ConfigMap/Secret key under different env names, cross-namespace, Service DNS → Endpoints). Mere same-database YAML parsing is not a sufficient differentiator. Read-only API preferred; secret values never exposed; eBPF/tracing out of scope.
+**Overall:** **Stages 1–7 complete (unified Stage 6/7) + React Flow frontend.** Findings are potential shared-resource coupling signals, not runtime proof (D-038).
+**Kubernetes:** out of scope — no adapter, fixture, dependency, or design work. Focus is Compose-only detection quality.
 
 ---
 
@@ -48,6 +48,7 @@ Blindspot/
 ├── AGENTS.md (530+), PROJECT_PLAN.md (310+), STATE.md, DECISIONS.md, HANDOFF.md
 ├── README.md (First Time Setup vs Running — general purpose, with Input Formats & Dependency Levels)
 ├── run.py / run.bat / run.sh (simple launchers — no PYTHONPATH needed)
+├── start_ui.py / start_ui.bat / start_ui.sh (one-click UI launcher: API + frontend + browser; Ctrl+C stops all; --build serves dist via API only)
 ├── .gitignore (allows fixtures/**/.env, ignores cache.json + .env + out/)
 ├── .env (API key, gitignored — created via prompt if missing)
 ├── fixtures/ (shared_env, shared_volume, near_miss, stage12_levels) + out/ per repo (report.json/md, graph.json)
@@ -62,9 +63,9 @@ Blindspot/
 │   ├── filtering.py (875 LOC) — states + identity + L0/endpoint fast-paths
 │   ├── judge.py (1050 LOC, grouped prompt/cache + balanced JSON + atomic cache)
 │   ├── model.py (265 LOC)
-│   ├── graph.py (350 LOC, build_graph + build_graph_from_groups)
-│   ├── report.py (550 LOC, grouped + accounting application/inputs/analysis + Analysis input/Pipeline summary)
-│   ├── cli.py (~750 LOC, input source tracking + full accounting + separate Services/Candidates)
+│   ├── graph.py (691 LOC, build_graph + build_graph_from_groups + unified explicit/hidden edges)
+│   ├── report.py (996 LOC, grouped + accounting + explicit relationships + hidden findings + decision rendering)
+│   ├── cli.py (~920 LOC, input source tracking + full accounting + separate Services/Candidates)
 │   ├── context.py, context_judge.py, decision.py, secrets.py
 └── tests/
     ├── test_parser.py (32)
@@ -75,12 +76,22 @@ Blindspot/
     ├── test_grouping.py (14) — resource-centric aggregation
     ├── test_accounting.py (6) — Cases A-F
     ├── test_audit.py (21)
-    └── test_stage12.py (12) — input adapters + L0/L1 acceptance
+    ├── test_stage12.py (12) — input adapters + L0/L1 acceptance
+    ├── test_decision.py (18) — Stage 5 decision policy/schema
+    ├── test_stage34.py (18) — Stage 3/4 contexts, validation, cache, contextual judging
+    └── test_unified_graph.py (7) — unified Stage 6/7: explicit vs hidden edges, decision metadata, determinism
+├── api/
+│   └── server.py — local run server (127.0.0.1:8765): `/api/runs`, `/api/run?id=`, `POST /api/analyze` (wraps CLI), serves `frontend/dist` static hosting
+└── frontend/
+    ├── src/App.tsx (tabs + run list + selection + URL params), api.ts, types.ts (typed against backend contract)
+    ├── src/graph/layout.ts (dagre LR layout, classification → edge styling), src/components/{GraphView,FlowNodes,DetailsPanel,AnalyzeTab}.tsx
+    ├── src/styles.css (~1200 LOC Obsidian-style dark theme), vite.config.ts (proxy `/api` → 127.0.0.1:8765), dist/ (prebuilt)
 ```
 
 **Validation & Next:**
-- Tested on 4 synthetic fixtures + `celery-docker-example` (5 services, 0 candidates) + `tmp_calcom2` (3 services, 6 raw → 6 obs → 1 group) + `docker` (Cal.com-like, 5 services, 6→6→1→1). `131 tests pass` (verified 2026-10-12).
-- **NEXT (D-041/D-042): Workstream B multi-repo validation** — run `python run.py` against 2–3 real OSS Compose repos; per-repo candidates/findings/TP-FP review + ground-truth set; then evidence-based fixes only. Tier 1 stays frozen except demonstrated fixes.
+- Tested on 4 synthetic fixtures + `celery-docker-example` (5 services, 0 candidates) + `tmp_calcom2` (3 services, 6 raw → 6 obs → 1 group) + `docker` (Cal.com-like, 5 services, 6→6→1→1). `174 tests pass` (verified 2026-10-29).
+- Frontend verification 2026-10-29: `npm run typecheck` clean, `npm run build` clean (bundle byte-identical to existing `dist/`), live API round-trip (`/api/runs` → `/api/run` → `POST /api/analyze` on a synthetic 3-service repo → run served, smoke artifacts removed), and dev-mode integration verified (`npm run dev` serves the app; `/api` proxy forwards to the API server). NOT yet verified: interactive browser session (node/edge clicks, details panel behavior, minimap) — implemented but not visually proven.
+- **NEXT: real-world multi-repo validation** (precision/recall + ground truth) and a browser-level frontend walkthrough; then evidence-based fixes only.
 
 ---
 
@@ -91,30 +102,36 @@ Blindspot/
 - **Resolution:** `resolution.py` — bounded `MAX_RESOLUTION_DEPTH=10`, cycle detection, deterministic lookup from `Compose/.env/env_file`, protocols `postgresql/postgres/mysql/mongodb/mongodb+srv/redis/rediss`, credentials stripped, `service|name` vs `postgresql|host|port|db`
 - **No AST** — Tier 2 K8s via YAML
 - **Docker:** Not required
-- **Startup:** `python run.py` / `run.bat` / `run.sh` (handles `PYTHONPATH` + venv) — simple for any user; first-time setup includes `python -m venv .venv && pip install -r requirements.txt`.
+- **Startup:** `python run.py` / `run.bat` / `run.sh` (handles `PYTHONPATH` + venv) — simple for any user; first-time setup includes `python -m venv .venv && pip install -r requirements.txt`. UI: `start_ui.bat` / `start_ui.sh` / `python start_ui.py` one-click launcher (API + dev server + browser; `--build` serves `frontend/dist` via the API only).
 - **Thinking:** low 1024 / medium 4096 / high 8192 → OpenRouter max_tokens 512/1024/2048, dynamically via `set_thinking_level()`; CLI accepts only `low/medium/high` (default `low`)
 - **Windows:** Venv required (`ModuleNotFoundError: No module named 'yaml'` if using system `python`) — `run.bat` auto-uses `.venv`; `run.py` also auto-relaunches via `subprocess.call` preserving console for `input()`.
+- **Frontend:** Vite 6 + React 19 + TypeScript 5.7, `@xyflow/react` 12.8 (React Flow), `@dagrejs/dagre` 1.1 (layout), `lucide-react` (icons); Node via `npm run dev`/`npm run typecheck`/`npm run build`; Vite dev proxy forwards `/api` → `127.0.0.1:8765` (`api/server.py`, no external dependencies — stdlib `http.server`).
 
 ---
 
-## 5. Development Priorities — Tier 1 Frozen, Tier 2 Proposal-Gated
+## 5. Development Priorities — Validation Next
 
 1. Messy fixtures — **DONE**
-2. Config parser — **DONE (FROZEN)**
-3. Candidate discovery — **DONE (FROZEN + D-044 L0/L1)**
-4. Candidate filtering — **DONE (FROZEN)**
-5. Bounded evidence + resolution redesign (states, chain, identity) — **DONE 2026-09-06 (FROZEN)**
-6. LLM judgment layer + verdict cache (`cache.json` with normalized keys) — **DONE (FROZEN)**
-7. Dependency model (model hidden) — **DONE (FROZEN)**
-8. Resource-based graph (normalized dedup) — **DONE (FROZEN)**
-9. Report generation (chain + identity) — **DONE (FROZEN)**
-10. CLI one-command testing on one or more repos — **DONE (FROZEN)**
-11. Validation on synthetic + real repos — **DONE** (Tier 1 demoable)
-12. **Tier 2 Kubernetes — PROPOSAL ONLY (D-039): review differentiator + PoC scope BEFORE any implementation. No adapter, dependency, or Tier 1 redesign until approved.**
+2. Config parser — **DONE**
+3. Candidate discovery — **DONE (+ D-044 L0/L1)**
+4. Candidate filtering + bounded evidence/resolution — **DONE**
+5. Resource aggregation — **DONE**
+6. LLM judgment (contextual, cached, validated) — **DONE (Stage 4 enhanced)**
+7. Coupling + Decision model — **DONE (Stage 5 enhanced: `CouplingModel` + `DecisionModel`)**
+8. Stage 6 Graph enhancement — **DONE (unified explicit + hidden edges, decision summaries; 7 tests)**
+9. Stage 7 Report enhancement — **DONE (explicit relationships separated from hidden findings; decisions rendered)**
+10. React Flow frontend + local API server — **DONE (verified: typecheck/build/pytest/API round-trip 2026-10-29; browser walkthrough pending)**
+11. Validation on multiple real Compose repos + ground truth — **NEXT** (precision/recall where defensible, LLM consistency)
+12. Browser-level frontend verification walkthrough — pending (implemented but not visually verified)
+13. Kubernetes — **out of scope** (no adapter, fixture, dependency, or design work)
 
 ---
 
 ## 6. Recent Activity
+
+- 2026-10-29: **Unified Stage 6/7 + Frontend recovered, documented, and verified** — graph.py now emits explicit `depends_on` as direct `service → service` edges (grey, no confidence/decision) alongside `service → resource` hidden-coupling edges (yellow `potential_hidden` / dashed `uncertain` / dotted hidden-by-default `rejected`) with per-node decision summaries; report separates `explicit_relationships` from hidden `findings` with Stage 5 decision cards. Added `tests/test_unified_graph.py` (7 tests). New `frontend/` (Vite + React 19 + TS + `@xyflow/react` + dagre + lucide): Obsidian-style dark theme, graph default tab with run sidebar, clickable nodes/edges → details panel (evidence, confidence bars, resolution chains, decisions), Analyze tab (local path → CLI via `POST /api/analyze`), URL params `?run=/?select=/?view=`. New `api/server.py` (stdlib HTTP, `/api/runs`, `/api/run`, `POST /api/analyze`, serves `frontend/dist`). New one-click launcher `start_ui.py` / `start_ui.bat` / `start_ui.sh` (API + dev server + browser auto-open, first-run `npm install`, process-tree cleanup on exit; `--build` mode verified serving `frontend/dist` via the API only; dev mode verified through the launcher). Verification: `pytest` 174 passed; `npm run typecheck` clean; `npm run build` clean; API round-trip exercised live with a synthetic repo. Docs updated (README frontend section + Graph DATA contract bullets; STATE/HANDOFF reconciled). Unverified: in-browser interaction walkthrough. Next: real-world validation.
+
+- 2026-10-28: **Stage 4 + Stage 5 Enhancement DONE (docs refreshed)** — Stage 4's primary path is now contextual multi-candidate judgment: `context.py` builds bounded `InvestigationContext` sections, `context_judge.py` validates per-candidate JSON (`CandidateJudgment`/`JudgmentFailure`), caches per-context, and `judge.py` `judge_contextual` packs/splits deterministically (one LLM call per context, not per pair). Stage 5 now persists both resource-centric `CouplingGroup`/`CouplingModel` and per-candidate `DecisionRecord`/`DecisionModel` (deterministic policy `stage5-v1`, `potential_dependency`/`insufficient_evidence`/`review`, `ProcessingStatus`, versioned schema). CLI wires `judge_contextual` → `CouplingModel.from_contextual_judgments` → `build_decision_model` and reports decision counts in accounting. Tests `167 passed` (new `test_decision.py` 18, `test_stage34.py` 18). Kubernetes removed from the roadmap.
 
 - 2026-10-12: **D-044 Stage 1+2 Enhancement DONE** — additive-only enhancement on `main` preserving D-042 baseline (119→131 green, hermetic). Stage 1 (`inputs.py` new, `parser.py`/`cli.py` adapted): `Input format → adapter → canonical Project → pipeline`. `SUPPORTED_COMPOSE_FILENAMES` = 4 YAML + `docker-compose.json`/`compose.json` (equivalent model, shared `_parse_services`, no separate discovery). Canonical `Service` gains `depends_on` (list/mapping/string normalized, sorted) + `source_file`; `Project` gains `sources`. Multi-file merge unions `depends_on`/`sources`. Unresolved `${VAR}` still preserved, never invented. CLI delegates discovery/find to `inputs` (superset behavior, same determinism). K8s/Terraform explicitly not built. Stage 2 (`discovery.py` extended, `filtering.py` fast-paths only): `Candidate` gains `candidate_id` (sha256-16, order-independent), `level` (L0/L1), `relationship_type` (`explicit_dependency`/`shared_env`/`shared_volume`/`shared_endpoint`), `origin`, `resource_identity`, `provenance` — all defaulted/backfilled so old constructions keep working. New sources: L0 `depends_on` (directional, missing targets kept unresolved) + L1 `shared_endpoint` (same normalized `protocol|host|port|db` via different var names, e.g. `DATABASE_URL` vs `DB_URL`; skips pairs already covered same-key and skips unknown/unresolved). Generic names alone never create a resource dependency; dedup by `(level,type,resource,value,pair)` keeps distinct resources separate; sort stable. Downstream already passed unknown types through conservatively; added explicit resolve/decide fast-paths so L0 reports `internal/unresolved` + `service|target` and endpoints report `internal/external_confirmed` + exact identity. Graph stays bipartite (L0 as `resource:service_dependency:*` nodes, never service→service). Tests: `fixtures/stage12_levels/` (L0 + cross-var endpoint + generic + unresolved + missing target) + `tests/test_stage12.py` (12 acceptance tests, hermetic). Also fixed pre-existing committed merge markers in `tests/test_accounting.py` (kept hermetic Case F) that blocked collection.
 

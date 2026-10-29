@@ -373,8 +373,13 @@ def test_no_scoring_static_llm_separate_and_compat():
     model = CouplingModel.from_grouped_judgments([(g, r) for (g, r) in pairs[:len(groups)]])
     graph = build_graph_from_groups(model)
     for e in graph["edges"]:
-        assert e["source"].startswith("service:") and e["target"].startswith("resource:")
-        assert "confidence" in e["data"] and "model" not in str(e)
+        if e["data"].get("classification") == "explicit":
+            assert e["source"].startswith("service:") and e["target"].startswith("service:")
+            assert "confidence" not in e["data"]
+        else:
+            assert e["source"].startswith("service:") and e["target"].startswith("resource:")
+            assert "confidence" in e["data"]
+        assert "model" not in str(e)
     report = build_grouped_report(model, graph_data=graph)
     assert "model" not in json.dumps(report.to_dict()).lower() or "nvidia" not in report.to_json()
 

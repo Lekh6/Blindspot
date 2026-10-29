@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, asdict, field
+from enum import Enum
 from typing import Any, Dict, List, Tuple
 
 from .model import Dependency, DependencyModel
@@ -267,44 +268,285 @@ def _grouped_display_name(group: Any) -> str:
     return group.grouping_key
 
 
+# ---------------------------------------------------------------------------
+# Classification helpers — semantic fields for the frontend
+# ---------------------------------------------------------------------------
+
+RELATIONSHIP_TYPES = {
+    "env_var": "shared_env",
+    "named_volume": "shared_volume",
+    "shared_endpoint": "shared_endpoint",
+    "service_dependency": "explicit_dependency",
+}
+
+RELATIONSHIP_ORIGINS = {
+    "env_var": "compose:environment",
+    "named_volume": "compose:volumes",
+    "shared_endpoint": "derived:endpoint-identity",
+    "service_dependency": "compose:depends_on",
+}
+
+DECISION_CLASSIFICATIONS = {
+    "potential_dependency": "potential_hidden",
+    "review": "uncertain",
+    "insufficient_evidence": "rejected",
+}
+
+VERDICT_CLASSIFICATIONS = {
+    "meaningful": "potential_hidden",
+    "uncertain": "uncertain",
+    "coincidental": "rejected",
+}
+
+_PUBLIC_DECISION_FIELDS = (
+    "candidate_id",
+    "service_a",
+    "service_b",
+    "resource",
+    "resource_type",
+    "resource_identity",
+    "resolution_status",
+    "identity_strength",
+    "stage4_verdict",
+    "stage4_confidence",
+    "decision",
+    "processing_status",
+    "score",
+    "evidence_references",
+    "counter_evidence_references",
+    "missing_information",
+    "policy_rules_applied",
+    "rationale",
+    "decision_schema_version",
+    "policy_version",
+)
+
+
+def decision_public_view(record: Any) -> Dict[str, Any]:
+    """Project a DecisionRecord into graph/report-safe data (never exposes model)."""
+    view: Dict[str, Any] = {}
+    for name in _PUBLIC_DECISION_FIELDS:
+        value = getattr(record, name)
+        if isinstance(value, tuple):
+            value = list(value)
+        elif isinstance(value, Enum):
+            value = value.value
+        view[name] = value
+    return view
+
+
+def summarize_decision_views(views: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Deterministic decision counts + overall outcome for a resource or service."""
+    decisions = sorted(str(v.get("decision", "")) for v in views)
+    statuses = sorted(str(v.get("processing_status", "")) for v in views)
+    counts = {
+        "potential_dependency": decisions.count("potential_dependency"),
+        "review": decisions.count("review"),
+        "insufficient_evidence": decisions.count("insufficient_evidence"),
+    }
+    status_counts = {
+        "ok": statuses.count("ok"),
+        "missing_judgment": statuses.count("missing_judgment"),
+        "invalid_judgment": statuses.count("invalid_judgment"),
+        "operational_failure": statuses.count("operational_failure"),
+        "conflicting_evidence": statuses.count("conflicting_evidence"),
+    }
+    if counts["potential_dependency"]:
+        overall: Any = "potential_dependency"
+    elif counts["review"]:
+        overall = "review"
+    elif counts["insufficient_evidence"]:
+        overall = "insufficient_evidence"
+    else:
+        overall = None
+    return {
+        "overall": overall,
+        "total_candidates": len(views),
+        "counts": counts,
+        "processing_status_counts": status_counts,
+        "candidate_ids": sorted(str(v.get("candidate_id", "")) for v in views),
+    }
+
+
+def _decision_index(decisions: Any) -> Dict[str, Any]:
+    if decisions is None:
+        return {}
+    records = getattr(decisions, "decisions", decisions)
+    index: Dict[str, Any] = {}
+    for record in records or ():
+        cid = getattr(record, "candidate_id", None)
+        if cid:
+            index[str(cid)] = record
+    return index
+
+
+def _group_observations(group: Any) -> Tuple[Any, ...]:
+    grouped_package = getattr(group, "grouped_package", None)
+    observations = getattr(grouped_package, "observations", ()) if grouped_package else ()
+    return tuple(observations or ())
+
+
+def _group_decision_views(group: Any, index: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Map Stage 5 decisions to a hidden group through its observation candidate IDs."""
+    views: List[Dict[str, Any]] = []
+    for observation in _group_observations(group):
+        cid = getattr(observation, "candidate_id", None)
+        if cid and str(cid) in index:
+            views.append(decision_public_view(index[str(cid)]))
+    views.sort(key=lambda v: (v["service_a"], v["service_b"], v["candidate_id"]))
+    return views
+
+
+def _service_decision_views(views: List[Dict[str, Any]], service: str) -> List[Dict[str, Any]]:
+    return [
+        v for v in views
+        if v["service_a"] == service or v["service_b"] == service
+    ]
+
+
+def _classification_for(group: Any, decision_summary: Any) -> str:
+    if decision_summary and decision_summary.get("overall"):
+        return DECISION_CLASSIFICATIONS.get(decision_summary["overall"], "uncertain")
+    return VERDICT_CLASSIFICATIONS.get(group.verdict, "uncertain")
+
+
+def _is_explicit_group(group: Any) -> bool:
+    return getattr(group, "resource_type", "") == "service_dependency"
+
+
+def _explicit_relationship_rows(group: Any) -> List[Dict[str, Any]]:
+    """Extract directional explicit relationships from L0 observations."""
+    rows: List[Dict[str, Any]] = []
+    for observation in _group_observations(group):
+        source = str(observation.service_a)
+        target = str(observation.service_b)
+        identity = getattr(observation, "normalized_identity", None)
+        rows.append({
+            "source": source,
+            "target": target,
+            "candidate_id": getattr(observation, "candidate_id", ""),
+            "target_resolved": bool(identity and str(identity).startswith("service|")),
+            "evidence": getattr(observation, "evidence", ""),
+            "provenance": getattr(observation, "provenance", None),
+            "relationship_type": "explicit_dependency",
+            "semantics": "startup_dependency",
+            "origin": "compose:depends_on",
+            "classification": "explicit",
+        })
+    rows.sort(key=lambda r: (r["source"], r["target"]))
+    return rows
+
+
+def explicit_relationships_from_groups(groups: List[Any]) -> List[Dict[str, Any]]:
+    """Deterministic explicit relationship rows from L0 groups (public, reusable by report)."""
+    rows: List[Dict[str, Any]] = []
+    for group in sorted(groups, key=lambda g: g.grouping_key):
+        if _is_explicit_group(group):
+            rows.extend(_explicit_relationship_rows(group))
+    # Deduplicate identical declared edges while preserving candidate IDs.
+    merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in rows:
+        key = (row["source"], row["target"])
+        if key not in merged:
+            entry = dict(row)
+            entry["candidate_ids"] = [row["candidate_id"]] if row["candidate_id"] else []
+            merged[key] = entry
+        else:
+            entry = merged[key]
+            if row["candidate_id"] and row["candidate_id"] not in entry["candidate_ids"]:
+                entry["candidate_ids"].append(row["candidate_id"])
+            entry["target_resolved"] = entry["target_resolved"] or row["target_resolved"]
+    result: List[Dict[str, Any]] = []
+    for (source, target), entry in sorted(merged.items()):
+        entry["candidate_ids"] = sorted(entry["candidate_ids"])
+        entry["relationship_id"] = f"explicit:service:{source}->service:{target}"
+        entry["source_id"] = f"service:{source}"
+        entry["target_id"] = f"service:{target}"
+        result.append(entry)
+    return result
+
+
 def build_graph_from_groups(
     model: Any,  # CouplingModel
     meaningful_only: bool = True,
+    decisions: Any = None,  # DecisionModel or iterable[DecisionRecord]
 ) -> Dict[str, Any]:
-    """Build React Flow graph from grouped CouplingModel (one node per resource group).
+    """Build React Flow graph from grouped CouplingModel.
 
-    What enters: CouplingModel (resource-centric groups, one per normalized identity).
-    What leaves: same JSON contract {"nodes": [...], "edges": [...]} bipartite Service→Resource.
-    - One resource node per group (normalized identity already deduped)
-    - One service node per service
-    - One edge per service in group (not per pairwise observation)
-    - Deterministic, provider hidden, confidence on edge.
+    Explicit L0 relationships become service → service edges with
+    classification="explicit" and startup-dependency semantics. Hidden
+    shared-resource relationships stay service → resource. Hidden edges carry
+    semantic classification plus Stage 5 decision metadata when supplied.
+
+    - Explicit relationships are always included, regardless of meaningful_only.
+    - Hidden groups are filtered by meaningful_only as before.
+    - Deterministic, provider hidden, confidence preserved only where it exists.
     """
-    groups: List[Any]
-    if hasattr(model, "meaningful_only") and meaningful_only:
-        groups = list(model.meaningful_only().groups)  # type: ignore
-    elif hasattr(model, "groups"):
-        groups = list(model.groups)  # type: ignore
-    else:
-        groups = list(model)  # type: ignore
+    all_groups = list(getattr(model, "groups", model) or ())  # type: ignore[arg-type]
+    all_groups.sort(key=lambda g: g.grouping_key)
 
-    groups = sorted(groups, key=lambda g: g.grouping_key)
+    explicit_groups = [g for g in all_groups if _is_explicit_group(g)]
+    hidden_all = [g for g in all_groups if not _is_explicit_group(g)]
+    if meaningful_only:
+        hidden_groups = [g for g in hidden_all if g.verdict == "meaningful"]
+    else:
+        hidden_groups = hidden_all
+
+    groups = explicit_groups + hidden_groups
+    groups.sort(key=lambda g: g.grouping_key)
 
     if not groups:
         return {"nodes": [], "edges": []}
+
+    decision_index = _decision_index(decisions)
 
     service_ids: Dict[str, GraphNode] = {}
     resource_nodes: Dict[str, GraphNode] = {}
     edges_by_id: Dict[str, GraphEdge] = {}
 
-    for group in groups:
-        # Service nodes
-        for svc in sorted(group.services):
-            sid = _service_id(svc)
-            if sid not in service_ids:
-                service_ids[sid] = GraphNode(id=sid, type="service", data={"name": svc})
+    def ensure_service(name: str, resolved: bool = True) -> str:
+        sid = _service_id(name)
+        existing = service_ids.get(sid)
+        if existing is None:
+            data: Dict[str, Any] = {"name": name}
+            if not resolved:
+                data["resolved"] = False
+            service_ids[sid] = GraphNode(id=sid, type="service", data=data)
+        elif not resolved and existing.data.get("resolved") is not False:
+            service_ids[sid] = GraphNode(
+                id=sid, type="service", data={**existing.data, "resolved": False}
+            )
+        return sid
 
-        # Resource node — one per group
+    # Explicit relationships: always service → service, never resource-mediated.
+    for row in explicit_relationships_from_groups(explicit_groups):
+        source_id = ensure_service(row["source"])
+        target_id = ensure_service(row["target"], resolved=bool(row["target_resolved"]))
+        edge_data: Dict[str, Any] = {
+            "relationship_type": row["relationship_type"],
+            "classification": row["classification"],
+            "semantics": row["semantics"],
+            "origin": row["origin"],
+            "target_resolved": bool(row["target_resolved"]),
+            "candidate_ids": list(row["candidate_ids"]),
+            "evidence": row["evidence"],
+        }
+        if row.get("provenance"):
+            edge_data["provenance"] = row["provenance"]
+        eid = row["relationship_id"]
+        edges_by_id[eid] = GraphEdge(id=eid, source=source_id, target=target_id, data=edge_data)
+
+    # Hidden relationships: service → resource, one resource node per group.
+    for group in hidden_groups:
+        group_views = _group_decision_views(group, decision_index)
+        decision_summary = summarize_decision_views(group_views) if group_views else None
+        classification = _classification_for(group, decision_summary)
+        relationship_type = RELATIONSHIP_TYPES.get(group.resource_type, group.resource_type)
+        origin = RELATIONSHIP_ORIGINS.get(group.resource_type, "unknown")
+
+        for svc in sorted(group.services):
+            ensure_service(svc)
+
         rid = _grouped_resource_key(group)
         if rid not in resource_nodes:
             data: Dict[str, Any] = {
@@ -315,21 +557,49 @@ def build_graph_from_groups(
                 "identity_strength": group.identity_strength,
                 "grouping_key": group.grouping_key,
                 "resource_identity": group.resource_identity,
+                "relationship_type": relationship_type,
+                "semantics": "resource_mediated",
+                "origin": origin,
+                "evidence_count": group.evidence_count,
+                "service_count": group.service_count,
+                "configuration_evidence": {
+                    svc: list(vars_sorted)
+                    for svc, vars_sorted in sorted(group.configuration_evidence.items())
+                },
+                "unresolved_vars": list(group.unresolved_vars),
+                "observation_resources": list(group.observation_resources),
+                "representative_chain": list(group.representative_chain),
             }
-            # Keep display clean — remove None values
+            if decision_summary:
+                data["decision_summary"] = decision_summary
+                data["candidate_ids"] = decision_summary["candidate_ids"]
+                data["decisions"] = group_views
             data = {k: v for k, v in data.items() if v is not None}
             resource_nodes[rid] = GraphNode(id=rid, type="resource", data=data)
 
-        # Edges: one per service in group
         for svc in sorted(group.services):
             sid = _service_id(svc)
             eid = _edge_id(sid, rid)
+            edge_data = {
+                "confidence": float(group.confidence),
+                "relationship_type": relationship_type,
+                "classification": classification,
+                "semantics": "resource_mediated",
+                "origin": origin,
+            }
+            service_views = _service_decision_views(group_views, svc)
+            if service_views:
+                service_decision = summarize_decision_views(service_views)
+                edge_data["decision"] = service_decision["overall"]
+                edge_data["decision_counts"] = service_decision["counts"]
+                edge_data["processing_status_counts"] = service_decision["processing_status_counts"]
+                edge_data["candidate_ids"] = service_decision["candidate_ids"]
             if eid not in edges_by_id:
-                edges_by_id[eid] = GraphEdge(id=eid, source=sid, target=rid, data={"confidence": float(group.confidence)})
+                edges_by_id[eid] = GraphEdge(id=eid, source=sid, target=rid, data=edge_data)
             else:
                 existing = edges_by_id[eid]
                 if float(group.confidence) > float(existing.data.get("confidence", 0)):
-                    edges_by_id[eid] = GraphEdge(id=eid, source=sid, target=rid, data={"confidence": float(group.confidence)})
+                    edges_by_id[eid] = GraphEdge(id=eid, source=sid, target=rid, data=edge_data)
 
     nodes = sorted(list(service_ids.values()) + list(resource_nodes.values()), key=lambda n: n.id)
     edges = sorted(edges_by_id.values(), key=lambda e: e.id)
@@ -344,7 +614,10 @@ def build_graph_from_groups(
             G.add_edge(e.source, e.target)
         for e in edges:
             if e.source.startswith("service:") and e.target.startswith("service:"):
-                raise ValueError(f"Graph must not have service→service edge: {e.id}")
+                if e.data.get("classification") != "explicit":
+                    raise ValueError(
+                        f"Only explicit relationships may be service→service: {e.id}"
+                    )
     except ImportError:
         pass
 
@@ -354,8 +627,11 @@ def build_graph_from_groups(
 def build_graph_data_from_groups(
     model: Any,
     meaningful_only: bool = True,
+    decisions: Any = None,
 ) -> GraphData:
-    raw = build_graph_from_groups(model, meaningful_only=meaningful_only)
+    raw = build_graph_from_groups(
+        model, meaningful_only=meaningful_only, decisions=decisions
+    )
     nodes = tuple(GraphNode(id=n["id"], type=n["type"], data=n["data"]) for n in raw["nodes"])
     edges = tuple(GraphEdge(id=e["id"], source=e["source"], target=e["target"], data=e["data"]) for e in raw["edges"])
     return GraphData(nodes=nodes, edges=edges)

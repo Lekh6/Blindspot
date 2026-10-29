@@ -600,7 +600,8 @@ def run_one_repo(
     cache_hits = 0
     llm_calls = 0
     groups_judged = len(grouped)  # All groups sent through judgment (even if deterministic)
-    
+    contextual_results: list = []
+
     if deterministic_only:
         if grouped:
             print("  [info] Deterministic-only mode: skipped", len(grouped), "LLM call(s) — producing structural JSONs only.")
@@ -644,7 +645,9 @@ def run_one_repo(
 
     model = CouplingModel.from_contextual_judgments(contextual_results) if not deterministic_only else CouplingModel.from_grouped_judgments(pairs)
     decision_model = build_decision_model(contextual_results) if not deterministic_only else DecisionModel(decisions=[])
-    graph = build_graph_from_groups(model, meaningful_only=meaningful_only)
+    graph = build_graph_from_groups(
+        model, meaningful_only=meaningful_only, decisions=decision_model
+    )
     # Build full accounting (prompt §2)
     raw_candidates = len(candidates)
     observations = len(packages)
@@ -714,7 +717,14 @@ def run_one_repo(
             "resource_nodes": len([n for n in graph.get("nodes", []) if n.get("type") == "resource"]),
         },
     }
-    report = build_grouped_report(model, graph_data=graph, meaningful_only=meaningful_only, total_services=len(project.services), accounting=accounting)
+    report = build_grouped_report(
+        model,
+        graph_data=graph,
+        meaningful_only=meaningful_only,
+        total_services=len(project.services),
+        accounting=accounting,
+        decisions=decision_model,
+    )
 
     # Versioned writes — keep history: report.json, report_1.json, report_2.json, ...
     report_json_path = _versioned_path(out_dir / "report.json")
@@ -749,6 +759,7 @@ def run_one_repo(
                 "thinking": thinking,
                 "deterministic_only": deterministic_only,
                 "coupling_log": model.to_log_list(),
+                "decision_log": decision_model.to_log_list(),
                 "grouped": True,
             },
             indent=2,

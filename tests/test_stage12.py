@@ -184,8 +184,8 @@ def test_dedup_distinct_kept():
     assert eps[0].resource == "postgresql|h1|5432|d1"
 
 
-# 11. Graph-data compatibility preserved (bipartite, L0 distinguishable)
-def test_graph_compat_bipartite():
+# 11. Explicit L0 edges are service→service; hidden edges stay service→resource.
+def test_graph_unified_explicit_and_hidden():
     proj = parse_compose_file("fixtures/stage12_levels/docker-compose.yml")
     cands = discover_candidates(proj)
     pkgs = build_evidence_packages(cands, proj)
@@ -194,13 +194,30 @@ def test_graph_compat_bipartite():
     pairs = [(g, JudgeResult(verdict="meaningful", confidence=0.8, reason="test", model="test")) for g in groups]
     model = CouplingModel.from_grouped_judgments(pairs)
     graph = build_graph_from_groups(model)
-    for e in graph["edges"]:
+
+    explicit = [e for e in graph["edges"] if e["data"].get("classification") == "explicit"]
+    hidden = [e for e in graph["edges"] if e["data"].get("classification") != "explicit"]
+    assert explicit, "depends_on must produce explicit service→service edges"
+    assert hidden, "shared resources must produce hidden service→resource edges"
+
+    for e in explicit:
+        assert e["source"].startswith("service:") and e["target"].startswith("service:")
+        assert e["data"]["relationship_type"] == "explicit_dependency"
+        assert e["data"]["semantics"] == "startup_dependency"
+        assert "confidence" not in e["data"]
+        assert "decision" not in e["data"]
+    assert "explicit:service:api->service:db" in {e["id"] for e in explicit}
+    ghost = [e for e in explicit if e["target"] == "service:ghost"]
+    assert ghost and ghost[0]["data"]["target_resolved"] is False
+
+    for e in hidden:
         assert e["source"].startswith("service:") and e["target"].startswith("resource:")
-    node_ids = [n["id"] for n in graph["nodes"]]
-    assert not any(n.startswith("service:") and False for n in node_ids)
-    # L0 vs L1 distinguishable via resource_type in node data
+        assert e["data"]["semantics"] == "resource_mediated"
+        assert "confidence" in e["data"]
+
+    # L0 is no longer represented as a resource node.
     rtypes = {n["data"].get("resource_type") for n in graph["nodes"] if n["type"] == "resource"}
-    assert "service_dependency" in rtypes  # L0 present as resource node, not direct edge
+    assert "service_dependency" not in rtypes
     assert rtypes & {"env_var", "shared_endpoint", "named_volume"}
 
 
