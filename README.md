@@ -1,89 +1,55 @@
-# BlindSpot — Implicit Cross-Service Coupling Detector
+# BlindSpot — Find the Dependencies Your Monitors Can't See
 
-**Find hidden dependencies that network monitors cannot see — shared env vars, shared volumes, and shared configuration in Docker Compose.**
+**BlindSpot scans Docker Compose projects for hidden couplings: two services that quietly rely on the same database, shared volume, or configuration — without ever calling each other on the network.**
 
-BlindSpot is a finished, demoable tool that turns `docker-compose.yml` + `.env` into an explainable `Service ↔ Resource` graph. It combines **deterministic static analysis** (filtering + bounded evidence resolution) with **one LLM judgment per surviving candidate** (cached, provider-agnostic, confidence mandatory) and renders the result as React Flow-ready graph data + human-readable report.
+Available tracing tools (Dynatrace, Datadog, etc.) only see network traffic. BlindSpot catches the other kind of dependency — the kind that lives in shared environment variables and shared volumes. When one team changes "their" database, BlastRadius reaches services they didn't know existed. BlindSpot finds those relationships, explains them, and tells you how confident it is.
 
----
-
-## What BlindSpot Does
-
-Two services can be coupled without ever calling each other:
-
-```yaml
-services:
-  orders:   { environment: { DB_HOST: postgres } }
-  reports:  { environment: { DB_HOST: postgres } }
-  postgres: { image: postgres:16 }
-  api:      { volumes: [shared-data:/data] }
-  worker:   { volumes: [shared-data:/data] }
-```
-
-* `orders ↔ reports` share `DB_HOST=postgres → postgres:16` (internal service) → same database → breaking change risk.
-* `api ↔ worker` share `shared-data:/data` (named volume) → shared filesystem.
-
-Standard tracing (Dynatrace/Datadog) only sees network calls — these couplings are invisible. BlindSpot makes them visible and explainable.
+It runs **entirely on your machine**: it reads your `docker-compose.yml` and `.env` files as text, writes results to a local `out/` folder, and never uploads your code anywhere. Optionally it asks an LLM (OpenRouter or Gemini) to judge ambiguous cases — that key stays in your local `.env`.
 
 ---
 
-## Pipeline — 7 Stages, End-to-End
+## Quick Start
 
+Three commands and you're done. Full details for each step are in the sections below.
+
+```bash
+# 1. Get the code
+git clone <your-repo-url> BlindSpot
+cd BlindSpot
+
+# 2. Install (first time only — creates a Python environment)
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS / Linux
+python -m pip install -r requirements.txt
+
+# 3. Run it (interactive questions, guided)
+python run.py
 ```
-Input (docker-compose.yml + .env + env_file)
-  → 1 Parse+Normalize (image, env_file, ${VAR}, ${VAR:-default}, unresolved preserved)
-  → 2 Candidate Discovery (broad, deterministic: shared env_var + named_volume, value split)
-  → 3 Filtering + Bounded Evidence + Resource Identity (drop generic PORT/DEBUG, bounded chain/cycle/depth, normalized postgresql|host|port|db stripped, states internal/external_confirmed/partial/unresolved, strength exact/config/unknown)
-  → 3b Resource-Centric Aggregation (group by normalized resource identity — one bounded grouped evidence per shared resource, observations preserved, deterministic, no repo scan)
-  → 4 LLM Judge (0 for noise + 1 call per resource group — not per pair, structured verdict/confidence/reason, cached, failsafe uncertain 0.5)
-  → 5 Coupling Model (resource-centric groups: identity/protocol/status/strength + services[] + observations + verdict/confidence/reason)
-  → 6 Resource Graph (React Flow DATA {"nodes","edges"} bipartite Service → Resource, one node per group, one edge per service in group, confidence preserved, deterministic, JSON serializable)
-  → 7 Report (human-readable: conclusion → evidence → technical details, summary distinguishes services/resource groups/observations)
-  → CLI out/<repo>/report.json + report.md + graph.json (+ report.log.json internal)
+
+Want the point-and-click version instead of terminal reports? After the install above:
+
+```bash
+npm install --prefix frontend   # first time only (needs Node.js 18+)
+python start_ui.py              # starts everything and opens your browser
 ```
 
 ---
 
-## Key Properties
+## Installation (first time only)
 
-* **Hybrid deterministic + LLM:** Static code finds candidates, LLM only interprets bounded grouped evidence (`calcom+calcom-api+studio → postgresql|${database_host}||${POSTGRES_DB}` config) — one judgment per shared resource, not per pair. No unrestricted repo scanning.
-* **Filtering before LLM:** `PORT 8000 vs 9000`, `DEBUG`, `LOG_LEVEL`, `TZ` filtered deterministically — obvious noise costs 0 LLM calls. Different raw values that normalize to same physical resource (e.g. `postgresql://user1:pass@db:5432/calcom` vs `user2:pass2` → `postgresql|db|5432|calcom`) are kept and grouped.
-* **Resource-centric aggregation:** Pairwise observations grouped by `normalized_identity` (primary key) into one bounded `GroupedEvidencePackage` per shared resource. Cal.com `6 observations → 1 group (3 services, 2 variable names)` → `1 LLM call` → `1 finding` → `1 resource node + 3 edges`. Unknown `CUSTOM` not over-merged; separate `normalized` → separate groups.
-* **Evidence matters:** Every finding retains grouped `evidence{resource_identity, protocol, resolution_status, identity_strength, services[], configuration_evidence{service->[vars]}, unresolved_vars, representative_chain, evidence_count}` + `reason`. States `internal`/`external_confirmed`/`partial`/`unresolved` never silently `external`.
-* **Normalized resource identity:** Value-structure parsing (`postgresql://`, `postgres://`, `mysql://`, `mongodb://`, `mongodb+srv://`, `redis://`) strips credentials, normalizes to `protocol|host|port|db`. `CUSTOM_RESOURCE=abc://...` stays unknown. `same configuration` vs `proven same physical` via `identity_strength` (`exact`/`config`/`unknown`).
-* **Confidence first-class (group-level):** `JudgeResult` → `CouplingGroup` → `Graph` edge `data.confidence` → `Report` finding `confidence: 0.8` — never averaged across pairs; produced for the group directly. Prompt guides `exact→0.85-1.0`, `config→0.6-0.85`, `unknown→0.0-0.6`.
-* **Resource-based, not service-to-service:** `calcom, calcom-api, studio → postgresql|${database_host}||${POSTGRES_DB}`. Never `calcom — calcom-api`. Distinct `service` vs `resource` nodes. Graph consumes grouped model: one node per group, one edge per service in group.
-* **Provider-agnostic, model hidden:** Prompts (`build_judge_prompt`, `build_grouped_judge_prompt`) are model-agnostic. Clients pluggable; `thinking` low/medium/high via `set_thinking_level()`. `model` stored privately (`_model`, `cache.json`, `report.log.json`) and omitted from external `report.json`/`graph.json`.
-* **Deterministic + cached (grouped):** Same `CouplingModel` → same grouped `cache_key sha256` (`grouping_key`, `resource_identity`, `services`, `configuration_evidence`, `unresolved_vars`) → same graph/report. Bounded chain (`MAX_RESOLUTION_DEPTH=10`, cycle detection, deterministic lookup).
-* **Input transparency & accounting:** Every run records `application.root`, `inputs.sources_used` (relative), `analysis.parsed.services/named_volumes`, `discovery.raw_candidates/observations`, `aggregation.resource_groups`, `judgment.groups_judged/llm_calls/cache_hits`, `graph.nodes/edges` — same numbers in CLI, `report.json` (`application`/`inputs`/`analysis`), and `report.md` (`Analysis input`/`Pipeline summary`). `0 candidates` with `5 services` is now diagnosable as *no Tier-1 evidence* not *no services*.
-
----
-
-## Ground-Truth Fixtures (Deliberately Messy)
-
-Fixtures prove parsing of real-world noise (`env_file` string vs list, `${VAR}` interpolation, `common.env`, `image`). They are for regression, not CLI demos.
-
-| Fixture | Discovery | Filtering | Judge (real) | Graph |
-|---|---|---|---|---|
-| **shared_env** `fixtures/shared_env/` (`env_file: common.env`, `${DB_HOST}`, `${DB_NAME:-orders}`, `postgres:15` + `.env DB_HOST=shared-db`) | 3: `DB_HOST`/`DB_NAME`/`SHARED_EXTRA` | 2 kept (`DB_HOST`/`DB_NAME` `unresolved` `config`, `related_config` bounded) | 2 `meaningful` | 4 nodes (2 svc + 2 res), 4 edges |
-| **shared_volume** `fixtures/shared_volume/` (`shared-data:/data` + `${DATA_PATH}`) | 2: `shared-data` + `DATA_PATH` | 1 kept (`shared-data` `internal` `named_volume`) | 1 `meaningful` | 3 nodes, 2 edges |
-| **near_miss** `fixtures/near_miss/` (`PORT 8000≠9000`, `APP_ENV`, `SHARED_NOISE`) | 3: `PORT` (different), `APP_ENV`, `SHARED_NOISE` | 0 kept (generic + different-values filtered) | 0 calls | 0 nodes, 0 edges |
-
----
-
-## First Time Setup (one-time)
-
-Do this once after cloning. Installs dependencies and prepares the environment. You do **not** need to repeat this to run the service later.
-
-**1. Get the code**
+### 1. Get the code
 
 ```bash
 git clone <your-repo-url> BlindSpot
 cd BlindSpot
 ```
 
-**2. Create a virtual environment & install dependencies**
+### 2. Python environment
 
-*Windows (cmd.exe):*
+BlindSpot needs **Python 3.10+**. Create an isolated environment so its dependencies don't clash with anything else on your system:
+
+**Windows (cmd.exe):**
 
 ```cmd
 python -m venv .venv
@@ -91,7 +57,7 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-*macOS / Linux / Git Bash:*
+**macOS / Linux / Git Bash:**
 
 ```bash
 python3 -m venv .venv
@@ -99,13 +65,17 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-This installs `pyyaml`, `python-dotenv`, `networkx`, `matplotlib`, `google-genai`, `openai`. The `.env` file is gitignored; `fixtures/**/.env` is tracked for tests.
+This installs the parser and graph tools (`pyyaml`, `python-dotenv`, `networkx`, `matplotlib`) and the optional LLM clients (`google-genai`, `openai`).
 
-> **Why a venv?** System `python` often does not see `PyYAML` (`ModuleNotFoundError: No module named 'yaml'`). Always run BlindSpot with the venv activated (or use `python run.py` which handles it).
+> **Important:** always launch BlindSpot through `run.py` (or with the venv activated). Running `import yaml` with bare system Python usually fails with `ModuleNotFoundError: No module named 'yaml'` — the venv is where PyYAML lives.
 
-**3. LLM API key (optional, recommended)**
+### 3. Node.js — only for the web UI
 
-BlindSpot works best with an LLM for semantic judgment (`meaningful` vs `coincidental`). **You do not need to edit `.env` manually.** On your first run, if no key is found, BlindSpot will prompt you:
+The terminal workflow needs no Node at all. To use the browser UI, install **Node.js 18+** (from https://nodejs.org), then run the `npm install --prefix frontend` step shown in Quick Start once — the `start_ui.py` launcher also does this automatically for you on first run.
+
+### 4. LLM API key — optional, recommended
+
+BlindSpot works without any key, but works *best* with one: the LLM judges whether two services sharing a variable means "same real dependency" or "coincidence". **You never have to edit `.env` by hand.** On your first run, if no key is found, BlindSpot asks:
 
 ```
 No LLM API key found in .env
@@ -114,69 +84,36 @@ Paste your API key (OpenRouter sk-or-... or Gemini AIza...): sk-or-v1-...
 Saved OPENROUTER_API_KEY to .env — will be used for LLM analysis.
 ```
 
-- Answer **Y** → paste your key (OpenRouter `sk-or-...` or Gemini `AIza...`). It is saved to `.env` for future runs.
-- Answer **n** → runs in **deterministic-only mode**: only structural JSONs (`graph.json`, `report.json`) are produced, without AI reasoning (`verdict`/`confidence`/`reason`). Output will be less accurate and harder to interpret. You will be asked again on the next run.
-
-You can also create `.env` manually if you prefer (`OPENROUTER_API_KEY=...` or `GEMINI_API_KEY=...`), but the prompt is the simplest path.
+* **Y** → paste an OpenRouter (`sk-or-...`) or Gemini (`AIza...`) key. It is saved to your local `.env` (which is gitignored) and reused from then on.
+* **n** → BlindSpot runs in **deterministic-only mode**: it still parses everything, builds the graph and report, and flags potential shared resources — but without AI reasoning, findings carry `uncertain (0.0)` confidence and note "Deterministic-only mode". You'll be asked again next run.
 
 ---
 
-## Running BlindSpot (every time)
-
-After the one-time setup above, starting the service is a single command. No `pip install`, no `PYTHONPATH`, no flags needed.
-
-**Simple start — interactive menu:**
-
-*Windows:*
+## Running the Analysis (terminal)
 
 ```cmd
-python run.py
-REM or double-click run.bat
+python run.py        :: Windows — or double-click run.bat
+python run.py        :: macOS / Linux — or bash run.sh
 ```
 
-*macOS / Linux / Git Bash:*
-
-```bash
-python run.py
-# or: bash run.sh
-# or: ./run.sh
-```
-
-`run.py` / `run.bat` / `run.sh` handle the `PYTHONPATH` and venv selection automatically. Use whichever launcher fits your OS.
-
-**What you will be asked (2 questions):**
+You'll be asked two questions:
 
 ```
 ========================================================
   BlindSpot — Implicit Cross-Service Coupling Detector
 ========================================================
-  Interactive setup — answer 2 questions to run analysis.
-
   Enter absolute application path (e.g. C:\path\to\YourApp): C:\path\to\YourApp
   Select AI thinking level [low / medium / high] (default: low): low
-
---------------------------------------------------------
-  Application : C:\path\to\YourApp
-  Thinking    : low
-  Output      : out/YourApp/
---------------------------------------------------------
-  Running BlindSpot pipeline...
 ```
 
-*   **1. Application path** — absolute path **from the C drive root** (e.g. `C:\path\to\YourApp`). Keep quotes if the path contains spaces: `"C:\My Projects\App"`. The CLI validates that the path is absolute, exists, is a directory, and contains a `docker-compose.yml`/`compose.yml` (searched recursively). If none is found, it warns and asks for confirmation.
-*   **2. AI thinking** — `low` (fast/cheap), `medium` (balanced), or `high` (thorough). Only `low`/`medium`/`high` are accepted; empty defaults to `low`. Case-insensitive.
+1. **Application path** — absolute path to a folder containing a `docker-compose.yml` (or `compose.yml`, searched recursively). Quote paths with spaces: `"C:\My Projects\App"`. On Windows, give the path from the drive root, e.g. `C:\...`; on macOS/Linux, `/path/to/repo`.
+2. **Thinking level** — `low` (fast/cheap), `medium`, or `high` (thorough). This only affects LLM calls, which happen later per interesting finding.
 
-If no API key is present, a third prompt appears (see First Time Setup §3) — **Y** to enter a key, **n** for deterministic-only JSONs.
+If no API key is present, a third prompt appears (see installation step 4). `Ctrl+C` exits cleanly at any point.
 
-Edge cases are handled inline: empty path, relative path, non-existent directory, file instead of directory, missing compose file, invalid thinking keyword, and `Ctrl+C` exits cleanly without a traceback.
-
-**What you will see (pipeline accounting — same as `report.json`/`report.md`):**
+When it finishes you'll see a summary like:
 
 ```
-Application : C:\path\to\YourApp
-Thinking    : low
-Output      : out/YourApp/
-...
 Analysis complete
 
 Input
@@ -187,270 +124,166 @@ Parsed
   Named volumes        : 1
 
 Analysis
-  Candidates generated : 0
-  Observations         : 0
-  Resource groups      : 0
-  Groups judged        : 0
-  Meaningful couplings : 0
+  Candidates generated : 6
+  Observations         : 6
+  Resource groups      : 1
+  Groups judged        : 1
+  Meaningful couplings : 1
 
 Graph
-  Nodes                : 0
-  Edges                : 0
+  Nodes                : 4
+  Edges                : 3
 ```
 
-`0 candidates` with `5 services` now clearly means *“parsed successfully, but no Tier-1 shared-resource evidence was found”* — not *“0 services discovered.”* See `report.md` `Analysis input` + `Pipeline summary` for the same numbers and `## Result` explanations.
+Every number here also appears in `report.json` / `report.md`, so evidence is auditable — including when it's legitimately *zero* ("parsed 5 services but no shared-resource evidence found", which is not an error).
 
-**Outputs per run (versioned history, not overwrites):**
-
-```
-out/<app>/report.json      (1st run)
-out/<app>/report_1.json    (2nd run on same app — history kept, not overwritten)
-out/<app>/report_2.json    (3rd run, etc.)
-out/<app>/report.md        → report_1.md, report_2.md ...
-out/<app>/graph.json       → graph_1.json, graph_2.json ...
-out/<app>/report.log.json  → report_1.log.json ...
-cache.json                 (verdict cache, key = sha256(cache_key_dict with normalized_identity))
-```
-
-First analysis creates `report.json`; re-analyzing the same `C:\path\to\YourApp` keeps previous files and writes `report_1.json` / `report_1.md` / `graph_1.json` / `report_1.log.json`, then `report_2.json` etc. All runs stay in `out/<app>/` for history.
-
-*Deterministic-only note:* If you chose **n** at the API-key prompt, only structural JSONs are produced without AI reasoning. `report.md` will contain a banner stating deterministic mode and findings will show `verdict: uncertain (0.0)` with reason `Deterministic-only mode — no LLM analysis`.
-
-**Reading results (any OS):**
+**Your results** land under `out/<app-name>/`:
 
 ```cmd
-type out\YourApp\report.md
-type out\YourApp\report.json
-type out\YourApp\graph.json
+type out\YourApp\report.md      :: the human-readable report
+type out\YourApp\graph.json     :: machine-readable graph
 ```
 
-```bash
-cat out/YourApp/report.md
-cat out/YourApp/report.json
-cat out/YourApp/graph.json
-```
+Re-running analysis on the same app keeps history instead of overwriting: `report.json` → `report_1.json` → `report_2.json`… (same for `.md`, `graph.json`).
 
-**Determinism & cost:** Same repo → same IDs (`sorted` + `sha256`). `near_miss` → 0 LLM calls. Interesting candidate → 1 call per resource group, cached.
-
-**Advanced — flags for scripting / tests (optional):**
+**For scripting, you can skip the menu:**
 
 ```cmd
-python run.py "C:\path\to\repo1" "C:\path\to\repo2" --thinking low
-python run.py "C:\path\to\repo" --thinking medium --provider openrouter --out out --cache cache.json
-python run.py --interactive   REM force menu even when flags are present
-python run.py --help
+python run.py "C:\path\to\repo1" --thinking low
+python run.py "C:\path\to\repo" --thinking medium --provider openrouter --out out
+python run.py --list-fixtures     REM show the built-in example projects and exit
 ```
 
-```
---compose docker-compose.yml  explicit file (default: auto-find docker-compose.yml|compose.yml via rglob)
---provider auto|openrouter|gemini
---thinking low|medium|high    (low=cheap, medium=balanced, high=thorough; default: low)
---cache cache.json            (use 'none' to disable)
---all                         include coincidental/uncertain in graph/report (default: meaningful_only)
---out out                     root -> out/<repo>/report.json+report.md+graph.json
---interactive                 force interactive menu
---list-fixtures               list bundled fixtures and exit
-```
-
-*General paths:* On Windows, paths in advanced mode must be absolute from `C:\` drive (e.g. `C:\path\to\repo`). On macOS/Linux/Git Bash, absolute paths like `/path/to/repo` are accepted.
-
-**Manual stages (without CLI — for development):**
-
-```bash
-# Git Bash / macOS / Linux
-.venv/bin/python -m pytest -v
-PYTHONPATH=src .venv/bin/python -c "from blindspot.parser import parse_compose_file; from blindspot.discovery import discover_candidates; from blindspot.filtering import build_evidence_packages; p=parse_compose_file('fixtures/shared_env/docker-compose.yml'); print([pkg.to_dict() for pkg in build_evidence_packages(discover_candidates(p), p)])"
-
-# Windows (cmd.exe) — with venv activated
-python -m pytest -v
-```
+| Flag | Meaning |
+|---|---|
+| `--compose <file>` | analyze one explicit Compose file |
+| `--provider auto\|openrouter\|gemini` | which LLM provider to use |
+| `--thinking low\|medium\|high` | effort/verbosity of LLM calls (default `low`) |
+| `--cache <file>` / `--cache none` | verdict cache location (default `cache.json`) or disable |
+| `--all` | also include coincidental/uncertain findings in the graph & report |
+| `--out <dir>` | where to write results (default `out/`) |
+| `--interactive` | force the question menu even with flags |
 
 ---
 
-## Frontend (Obsidian-style graph explorer)
+## Viewing Results in the Web UI
 
-A local React + TypeScript frontend reads runs from `out/` through a small API server (`api/server.py`, Python stdlib only — no external server dependencies). Nothing is uploaded to a cloud service.
+The graph explorer turns a run into an interactive picture: services on one side, shared resources in the middle, and the potential hidden dependency highlighted in yellow.
 
-**Status (verified 2026-10-29):** backend tests (174 passing), `npm run typecheck`, `npm run build`, the API endpoints (`/api/runs`, `/api/run?id=`, `POST /api/analyze`), and dev-mode integration (Vite dev server + `/api` proxy) are all verified working. The interactive browser walkthrough (clicks, details panel, minimap) is implemented but has not yet been visually verified in a live browser session.
-
-**Architecture:**
-
-- `api/server.py` — local API on `127.0.0.1:8765` (overridable via `PORT`): lists runs under `out/` (latest versioned `graph.json` + `report.json` pair per run directory), serves a single run's graph + report, triggers the existing CLI on a local repository path (`POST /api/analyze`), and serves static files from `frontend/dist` for production-style use.
-- `frontend/src/App.tsx` — app shell: sidebar run list, two tabs (dependency graph default / analyze), loading, error, and empty states, URL parameters (`?run=<id>`, `?select=<node|edge id>`, `?view=analyze`).
-- `frontend/src/graph/layout.ts` — deterministic dagre left-to-right layout; edge styling by classification: explicit (grey), `potential_hidden` (yellow), `uncertain` (dashed), `rejected` (dotted, hidden behind a "Show rejected" toggle).
-- `frontend/src/components/GraphView.tsx` — React Flow canvas (`@xyflow/react`) with Controls, MiniMap, dot Background, legend, and node/edge/pane click handling.
-- `frontend/src/components/FlowNodes.tsx` — custom service and resource nodes (distinct visual treatment; `Service ↔ Resource`, never implying a direct call).
-- `frontend/src/components/DetailsPanel.tsx` — side panel with service/resource/edge details: evidence, resolution chains, confidence bars, and Stage 5 decision cards.
-- `frontend/src/components/AnalyzeTab.tsx` — local repository path (persisted in `localStorage`), LLM thinking level selector, run output/stderr display, and the existing-runs list.
-- `frontend/src/types.ts` — TypeScript types mirroring the backend payload contract (`classification`, `DecisionView`, decision summaries).
-
-**Dependencies added:** `react`/`react-dom` 19, `@xyflow/react` 12.8, `@dagrejs/dagre` 1.1, `lucide-react`, Vite 6, TypeScript 5.7 (`package.json`).
-
-**One-click start (recommended):**
+**One-click (recommended):**
 
 ```bash
-# Windows — double-click, or:
+# Windows — double-click, or in a terminal:
 start_ui.bat
 # macOS / Linux / Git Bash:
 bash start_ui.sh
 ```
 
-This starts the local API, starts the frontend, opens the browser automatically (http://localhost:5173 by default; frontend npm packages install themselves on first run), and stops everything on Ctrl+C. `start_ui.bat --build` instead builds `frontend/dist` and serves it via the API alone at http://127.0.0.1:8765.
+This starts the local API, starts the frontend, and **opens your browser automatically** (http://localhost:5173). Frontend packages install themselves on the first run. Press `Ctrl+C` (or close the window) to stop everything.
 
-**Manual development (two terminals):**
+**Like a "production" feel?** `start_ui.bat --build` compiles the frontend once and serves it from the API itself at http://127.0.0.1:8765 — afterwards it needs no Node process.
 
-```bash
-# Terminal 1 — local API on 127.0.0.1:8765
-.venv\Scripts\python.exe api\server.py
+**Two-terminal alternative:** start `.venv\Scripts\python.exe api\server.py`, then in a second terminal `cd frontend && npm run dev` and open http://localhost:5173.
 
-# Terminal 2 — Vite dev server on http://localhost:5173 (proxies /api to the API)
-cd frontend
-npm install
-npm run dev
-```
+What you'll see:
 
-**Type-check / production-style local build:**
+* **Dependency graph** (default screen) — explicit `depends_on` arrows in grey, potential hidden couplings **in yellow**, uncertain ones dashed. Rejected coincidences are hidden until you toggle "Show rejected".
+* **Click anything** — services, resources, and edges each open a side panel with the underlying evidence (which variables, which files, what the values resolve to), a confidence bar, and the reasoning behind every decision.
+* **Analyze repository tab** — paste a local repository path, pick a thinking level, hit "Run analysis". It runs the same pipeline as `run.py` and no cloud is involved.
+* The sidebar lists all runs found under `out/`. Useful URL parameters: `?run=shared_env`, `?select=…`, `?view=analyze`.
 
-```bash
-cd frontend
-npm run typecheck
-npm run build
-cd ..
-.venv\Scripts\python.exe api\server.py
-# open http://127.0.0.1:8765 (serves frontend/dist + /api)
-```
-
-The app has two tabs:
-
-- **Dependency graph** (default) — explicit `depends_on` relationships (grey) and potential hidden resource-mediated couplings (yellow, dashed for uncertain) in one graph. Click any service, resource, or edge for its evidence, confidence, and decision reasoning.
-- **Analyze repository** — enter a local repository path and run the existing CLI pipeline via the local API. If no LLM key is configured, the run continues in deterministic-only mode.
-
-Optional URL parameters: `?run=shared_env`, `?select=resource:env_var:DB_HOST=shared-db`, `?view=analyze`.
-
-**Known limitations / remaining work:** no frontend unit tests yet; interactive browser behavior not yet visually verified; no source-code analysis (out of Tier 1 scope).
+**Tip:** the `fixtures/` directory ships with three tiny self-contained example projects (`shared_env`, `shared_volume`, `near_miss`). Analyze one of them — `python run.py "<full path to fixtures\shared_env>" --thinking low` — to have real sample data in `out/` for the graph UI within seconds.
 
 ---
 
-## Graph DATA Contract — React Flow Ready
+## How It Works (7 stages, in plain words)
 
-Stage 6 produces provider-agnostic data, not an image. Frontend handles layout/zoom/pan/selection/evidence panels.
+| # | Stage | What happens | Why it matters |
+|---|-------|--------------|----------------|
+| 1 | **Parse + Normalize** | Reads every supported file format, traces `${VAR}` references and `env_file` imports through your Compose setup, keeps unresolved references visible | Reliable foundation, never guesses values |
+| 2 | **Candidate Discovery** | Broadly collects *possible* shared resources: services with the same variable names, shared named volumes, `depends_on` chains, and same-database connections under different variable names | This is just suspicion — not yet a finding |
+| 3 | **Filter + Evidence + Identity** | Drops obvious noise (`PORT`, `DEBUG`, `LOG_LEVEL`) — these cost zero LLM calls — then resolves what each value actually points to (a Compose service? an external DB?) and groups observations pointing at the *same physical resource* even when variable names differ | Cheaper and more accurate than treating every name match as a dependency |
+| 4 | **LLM Judge** | One LLM call per surviving *shared resource group* (not per service pair!), returning `meaningful` / `coincidental` / `uncertain`, a confidence score, and a reason. Results are cached so repeated runs are stable and cheap | The LLM judges evidence you can read — it never free-roams your codebase |
+| 5 | **Coupling + Decision Model** | Persists the groups (who shares what, which services observe it, verdict, confidence) and applies a deterministic policy to each candidate: `potential_dependency`, `review`, or `insufficient_evidence` | Every finding keeps *why* it was concluded, not just *that* it was |
+| 6 | **Resource Graph** | Builds a bipartite graph — **services on one side, shared resources on the other** — as plain JSON (`{"nodes": [...], "edges": [...]}`) the web UI renders. Potential hidden couplings are `service → resource`, never a fake direct service↔service arrow | The mechanism of the coupling is visible, the data is deterministic |
+| 7 | **Report** | Human-readable Markdown + JSON: conclusion first, then evidence, then technical details, with all confidence values preserved | Removes the need to interpret raw configuration by hand |
 
-```json
-{
-  "nodes": [
-    {"id": "service:calcom", "type": "service", "data": {"name": "calcom"}},
-    {"id": "service:calcom-api", "type": "service", "data": {"name": "calcom-api"}},
-    {"id": "service:studio", "type": "service", "data": {"name": "studio"}},
-    {"id": "resource:env_var:postgresql|${database_host}||${POSTGRES_DB}", "type": "resource", "data": {"name": "postgresql|${database_host}||${POSTGRES_DB}", "resource_type": "env_var", "resource_protocol": "postgresql", "resolution_status": "partial", "identity_strength": "config", "grouping_key": "env_var:postgresql|${database_host}||${POSTGRES_DB}", "resource_identity": "postgresql|${database_host}||${POSTGRES_DB}"}}
-  ],
-  "edges": [
-    {"id": "service:calcom->resource:env_var:postgresql|${database_host}||${POSTGRES_DB}", "source": "service:calcom", "target": "resource:env_var:postgresql|${database_host}||${POSTGRES_DB}", "data": {"confidence": 0.8}},
-    {"id": "service:calcom-api->resource:env_var:postgresql|${database_host}||${POSTGRES_DB}", "source": "service:calcom-api", "target": "resource:env_var:postgresql|${database_host}||${POSTGRES_DB}", "data": {"confidence": 0.8}},
-    {"id": "service:studio->resource:env_var:postgresql|${database_host}||${POSTGRES_DB}", "source": "service:studio", "target": "resource:env_var:postgresql|${database_host}||${POSTGRES_DB}", "data": {"confidence": 0.8}}
-  ]
-}
-```
+Design principles, briefly:
 
-* Potential hidden couplings remain resource-based: `calcom → postgresql|${database_host}||${POSTGRES_DB} ← calcom-api, studio`, never a hidden `service→service` edge. Hidden edges carry `classification: "potential_hidden" | "uncertain" | "rejected"`, `relationship_type`, `semantics: "resource_mediated"`, `origin`, and `confidence`.
-* Explicit Compose `depends_on` is the only allowed `service→service` edge: `classification: "explicit"`, `semantics: "startup_dependency"`, `origin: "compose:depends_on"`, `target_resolved`, and **no confidence or LLM decision**.
-* Grouped: one resource node per shared resource identity (normalized), one edge per service in group (Cal.com 3 services → 1 node + 3 edges, not 6 findings → 6 edges). Dedup by `grouping_key` (`env_var:postgresql|...`), credentials stripped, deterministic `sorted` IDs, `networkx` optional internally. Graph consumes `CouplingModel`, not pairwise `DependencyModel`.
+* **Discovery is deterministic, judgment is LLM.** Code finds candidates and gathers machine-verified facts; the LLM only interprets that bounded evidence.
+* **Shared names are not automatically dependencies.** Identical env keys are often coincidence — the pipeline distinguishes the two before spending anything.
+* **Evidence travels with the finding.** Every result includes which variables, which files, what values resolve to, and how confident the judgment is.
+* **Same run in, same result out.** Deterministic IDs and caching make the analysis reproducible and cheap to repeat.
+* **Wording stays careful.** Findings are *potential* couplings with evidence and confidence — never claimed as proven runtime behavior.
+* **The LLM provider is an implementation detail.** Works with Gemini or OpenRouter (or none). Which model produced a verdict is recorded internally for audits, kept out of the shared report.
 
 ---
 
-## Report Format
+## Example Output
 
-`report.json` (now self-explanatory with `application`/`inputs`/`analysis` + `summary` for compat):
-```json
-{
-  "application": {"root": "C:\\path\\to\\YourApp"},
-  "inputs": {"sources_used": ["docker-compose.yml"]},
-  "analysis": {
-    "parsed": {"services": 5, "named_volumes": 1},
-    "discovery": {"raw_candidates": 6, "observations": 6, "filtered_out": 0},
-    "aggregation": {"resource_groups": 1, "observations": 6},
-    "judgment": {"groups_judged": 1, "meaningful": 1, "coincidental": 0, "uncertain": 0, "llm_calls": 1, "cache_hits": 0},
-    "graph": {"nodes": 4, "edges": 3, "service_nodes": 3, "resource_nodes": 1}
-  },
-  "summary": {"services_analyzed": 5, "resource_groups": 1, "observations": 6, "meaningful_groups": 1, "coincidental_groups": 0, "uncertain_groups": 0, "resources": 1},
-  "graph_summary": {"nodes": 4, "edges": 3, "service_nodes": 3, "resource_nodes": 1},
-  "generated_at": "2026-09-07T...",
-  "findings": [{
-    "title": "Shared PostgreSQL Database Configuration",
-    "resource_identity": "postgresql|${database_host}||${POSTGRES_DB}",
-    "resource_protocol": "postgresql",
-    "resource_type": "env_var",
-    "resolution_status": "partial",
-    "identity_strength": "config",
-    "services": ["calcom", "calcom-api", "studio"],
-    "configuration_evidence": {"calcom": ["DATABASE_URL", "DATABASE_DIRECT_URL"], "calcom-api": ["DATABASE_URL", "DATABASE_DIRECT_URL"], "studio": ["DATABASE_URL", "DATABASE_DIRECT_URL"]},
-    "unresolved_vars": ["DATABASE_HOST", "POSTGRES_DB"],
-    "evidence_count": 6,
-    "service_count": 3,
-    "verdict": "meaningful", "confidence": 0.8, "reason": "All three services share the same templates..."
-  }]
-}
-```
+`report.md` reads like a review comment, with the tech trail attached:
 
-Zero-result example (`celery-docker-example` — 5 services, no Tier-1 candidates):
-```json
-{
-  "application": {"root": "C:\\path\\to\\celery"},
-  "inputs": {"sources_used": ["docker-compose.yml"]},
-  "analysis": {
-    "parsed": {"services": 5, "named_volumes": 1},
-    "discovery": {"raw_candidates": 0, "observations": 0, "filtered_out": 0},
-    "aggregation": {"resource_groups": 0, "observations": 0},
-    "judgment": {"groups_judged": 0, "meaningful": 0, "coincidental": 0, "uncertain": 0, "llm_calls": 0, "cache_hits": 0},
-    "graph": {"nodes": 0, "edges": 0}
-  },
-  "findings": []
-}
-```
-
-`report.md` (now with `Analysis input` + `Pipeline summary` + `Result` explanation):
-```
-# BlindSpot Report
-Generated: 2026-09-07T...
-
-## Analysis input
-Application root:
-C:\path\to\YourApp
-Compose configuration used:
-- docker-compose.yml
-
-## Pipeline summary
-Configuration parsed:
-- Services discovered: 5
-- Named volumes discovered: 1
-Dependency analysis:
-- Candidates generated: 6
-- Observations: 6
-- Shared resource groups: 1
-- Groups judged: 1
-- Meaningful couplings: 1
-Graph:
-- Nodes: 4
-- Edges: 3
-
+```markdown
 ## 1. Shared PostgreSQL Database Configuration
 Services involved:
 - calcom
 - calcom-api
 - studio
+
 Assessment: Meaningful implicit coupling
 Confidence: Medium (0.80)
 ...
 ```
 
-For `0 candidates` (legitimate, not parsing failure):
-```
-## Result
-BlindSpot successfully parsed 5 services and 1 named volume.
-No Tier 1 dependency candidates were generated from the supported configuration signals...
-This does not mean the services have no dependencies.
+`graph.json` (the same data the UI renders):
+
+```json
+{
+  "nodes": [
+    {"id": "service:calcom", "type": "service", "data": {"name": "calcom"}},
+    {"id": "resource:env_var:postgresql|${database_host}||${POSTGRES_DB}",
+     "type": "resource",
+     "data": {"resource_type": "env_var", "resource_protocol": "postgresql", "identity_strength": "config"}}
+  ],
+  "edges": [
+    {"id": "service:calcom->resource:...", "source": "service:calcom", "target": "resource:...", "data": {"confidence": 0.8, "classification": "potential_hidden"}}
+  ]
+}
 ```
 
-Conclusion first, evidence second, technical internals last. No `generic_variable=false` in body — retained only in JSON. Model hidden externally — `report.log.json` + `cache.json` retain provider for audit. `report.json` keeps `summary` for backward compat while new `analysis` is the primary accounting.
+Edge classifications you'll encounter:
+
+| Classification | Meaning | Visual |
+|---|---|---|
+| `explicit` | declared Compose `depends_on` (startup order) | grey line |
+| `potential_hidden` | judged *meaningful* shared resource | **yellow line** |
+| `uncertain` | judged inconclusive (deterministic-only or low evidence) | dashed line |
+| `rejected` | judged coincidental | dotted (hidden by default) |
+
+---
+
+## Built-in Fixtures (example projects)
+
+| Fixture | Demonstrates |
+|---|---|
+| `fixtures/shared_env/` | two services sharing `DB_HOST` via `env_file` + `.env` + `${VAR}` interpolation → 1 meaningful finding |
+| `fixtures/shared_volume/` | two services sharing a named `shared-data` volume → 1 meaningful finding |
+| `fixtures/near_miss/` | shares only coincidences (`PORT` with different values, `APP_ENV`) → **no findings** — the filter doing its job |
+| `fixtures/stage12_levels/` | mixes explicit `depends_on`, cross-variable endpoint identity, unresolved values, and missing targets |
+
+These are regression fixtures with deliberately messy real-world-style Compose files (merged env files, defaults, image overrides), kept small and hermetic.
+
+---
+
+## Verify Your Installation
+
+```bash
+cd BlindSpot
+python -m pytest -q            # 174 tests should pass
+cd frontend
+npm run typecheck              # should finish silently (0 type errors)
+npm run build                  # builds the UI for the API server
+```
 
 ---
 
@@ -458,50 +291,46 @@ Conclusion first, evidence second, technical internals last. No `generic_variabl
 
 ```
 Blindspot/
-├── AGENTS.md, PROJECT_PLAN.md, STATE.md, DECISIONS.md, HANDOFF.md
-├── .env (keys, gitignored), cache.json (gitignored), out/<repo>/ (reports, gitignored)
-├── api/server.py (local API: run listing/loading from out/, POST /api/analyze wedge into the CLI, static frontend/dist hosting; stdlib only)
-├── start_ui.py + start_ui.bat + start_ui.sh (one-click UI launcher: starts API + frontend, auto-installs npm deps on first run, opens the browser, Ctrl+C stops everything; `--build` serves frontend/dist via the API only)
-├── frontend/ (Vite + React 19 + TS; src/App.tsx, api.ts, types.ts, graph/layout.ts, components/{GraphView,FlowNodes,DetailsPanel,AnalyzeTab}.tsx, styles.css; dist/ prebuilt, gitignored)
-├── fixtures/ (shared_env, shared_volume, near_miss, stage12_levels)  # !fixtures/**/.env tracked
-├── src/blindspot/
-│   ├── inputs.py (adapter boundary: SUPPORTED_COMPOSE_FILENAMES 4 YAML + 2 JSON, load_compose_document, discover/find_compose_file; K8s/Terraform explicitly unsupported)
-│   ├── parser.py (Service.image/depends_on/source_file, Project.sources, env_file, ${VAR}, count_named_volumes; YAML+equivalent JSON share _parse_services)
-│   ├── discovery.py (Candidate{candidate_id/level/relationship_type/origin/resource_identity/provenance}; L0 depends_on + L1 shared_env/shared_volume/shared_endpoint cross-var identity, deterministic dedup/sort)
-│   ├── filtering.py (GENERIC_ENV_KEYS, EvidencePackage, bounded resolution, _decide_with_project)
-│   ├── resolution.py (bounded_resolve, ResolutionResult/Step, MAX_RESOLUTION_DEPTH=10, cycle, normalize postgresql|host|port|db)
-│   ├── aggregation.py (aggregate_evidence_packages, GroupedEvidencePackage, grouping by normalized_identity)
-│   ├── coupling.py (CouplingGroup, CouplingModel — resource-centric, one per shared resource)
-│   ├── judge.py (JudgeResult, Gemini/OpenRouter, build_judge_prompt + build_grouped_judge_prompt, cache.json grouped, llm_calls/cache_hits)
-│   ├── model.py (Dependency, DependencyModel — pairwise kept for tests, model hidden)
-│   ├── graph.py (GraphNode/Edge/Data, build_graph + build_graph_from_groups — unified: L0 explicit service→service edges + L1 hidden service→resource edges with decision summaries, dedup by normalized_identity/grouping_key)
-│   ├── report.py (ReportFinding/Data + GroupedReportFinding/Data, build_report + build_grouped_report — explicit_relationships separate from hidden findings, decision cards in JSON/Markdown, application/inputs/analysis + Analysis input/Pipeline summary + zero-result explanations)
-│   └── cli.py (interactive: absolute C:\ + low/medium/high + input source tracking + full pipeline accounting + versioned history)
-└── tests/ (test_parser 32, test_discovery 8, test_filtering 8, test_graph 13, test_resolution 17, test_grouping 14, test_accounting 6, test_audit 21, test_stage12 12, test_decision 18, test_stage34 18, test_unified_graph 7 → 174 green, hermetic)
+├── run.py / run.bat / run.sh         — one-command CLI analysis (interactive)
+├── start_ui.py / .bat / .sh          — one-command web UI (API + frontend + browser)
+├── requirements.txt                  — Python dependencies
+├── .env                              — your API key (gitignored, created via prompt)
+├── cache.json                        — LLM verdict cache (gitignored)
+├── out/<repo>/                       — per-repo results (report/graph JSON + Markdown, versioned history)
+├── fixtures/                         — three tiny example projects + a levels-mix fixture
+├── src/blindspot/                    — the 7-stage pipeline (parser, discovery, filtering,
+│                                       resolution, aggregation, judge, coupling, decision,
+│                                       graph, report, cli)
+├── api/server.py                     — local run server + static hosting for the UI (stdlib only)
+├── frontend/                         — React + TypeScript graph explorer (Vite, React Flow)
+├── tests/                            — 174 hermetic tests, no network
+└── docs: AGENTS.md, STATE.md, DECISIONS.md, HANDOFF.md, PROJECT_PLAN.md
 ```
 
-## Input Formats & Dependency Levels (Stage 1+2)
+---
 
-**Supported:** `docker-compose.yml|yaml`, `compose.yml|yaml` + equivalent `docker-compose.json`/`compose.json` (same Compose model, same discovery — JSON is not a separate implementation). `.env` + service `env_file` (string/list/`{path,required}`), mapping+list env syntax, `${VAR}`/`${VAR:-default}`/`$VAR` with unresolved preserved, multi-file merge (env override, volumes union, `depends_on` union, image latest-wins, sources unioned).
+## Supported Inputs
 
-**Unsupported (explicit):** Kubernetes YAML, Terraform/HCL (future adapters, not built), remote URLs, non-mapping top-level documents. Unresolved `${VAR}` is never invented and never silently dropped.
+**Works with:** `docker-compose.yml` / `docker-compose.yaml` / `compose.yml` / `compose.yaml`, plus the equivalent JSON (`docker-compose.json` / `compose.json`). Also reads `.env` files and Compose `env_file:` imports, understands `${VAR}`, `${VAR:-default}`, `$VAR` interpolation (unresolved variables stay visibly unresolved — never invented, never silently dropped), and merges multi-file setups (e.g. `docker-compose.override.yml` patterns: env override, volume union, `depends_on` union).
 
-**Levels:** `L0` explicit (`depends_on`, `resource_type: service_dependency` — baseline context, missing targets kept as unresolved, rendered as resource nodes not direct edges) vs `L1` shared-resource (`shared_env` same key, `shared_volume`, `shared_endpoint` same `protocol|host|port|db` via different var names — e.g. `DATABASE_URL` vs `DB_URL`). `L2` table-level is future only. Generic overlap (`PORT 8000≠9000`) never becomes a resource dependency. Every candidate carries deterministic `candidate_id` (sha256-16, order-independent), `provenance`, and serializable `to_dict()`.
+**Does not (yet):** Kubernetes manifests, Terraform, remote URLs. Docker itself does not need to be running — everything is static file analysis.
+
+Dependency levels BlindSpot distinguishes: **L0** — explicit `depends_on` (baseline context); **L1** — shared resource across services (the hidden-coupling focus). Table-level (L2) analysis is a future direction.
 
 ---
 
 ## Technology
 
-Python 3.10+, `pyyaml`, `python-dotenv`, `networkx`, `matplotlib` (optional), `google-genai==0.8.0`, `openai==1.102.0`. Docker optional (read compose as text). Thinking `low 1024 → 512 tokens` / `medium 4096 → 1024` / `high 8192 → 2048` via `set_thinking_level()`. Resolution `MAX_RESOLUTION_DEPTH=10`. Cache `cache.json` is written atomically via `mkstemp` + `replace`.
+Python 3.10+ · `pyyaml` · `python-dotenv` · `networkx` · `matplotlib` (optional) · `google-genai` · `openai`. Frontend: Vite · React 19 · TypeScript · `@xyflow/react` · dagre · lucide-react. No Docker, no database, no cloud services, no telemetry.
 
 ---
 
 ## Documentation
 
-* `AGENTS.md` — architecture and pipeline design
-* `STATE.md` — current project state
-* `DECISIONS.md` — architecture decisions
-* `HANDOFF.md` — handoff notes
-* `PROJECT_PLAN.md` — project plan
+* `STATE.md` — current project state (what exists, what's verified)
+* `DECISIONS.md` — why every significant architectural choice was made (D-001…D-046)
+* `HANDOFF.md` — orientation notes for the next developer/agent
+* `AGENTS.md` — the architecture contract the implementation follows
+* `PROJECT_PLAN.md` — original build plan
 
-Run `python run.py` (or double-click `run.bat` on Windows) — it prompts for absolute `C:\` path + `low/medium/high` thinking (and API key if missing) — or `python run.py --help` to see flags.
+Run `python run.py` for a guided analysis, or `python start_ui.py` to browse an interactive graph — both work on Windows, macOS, and Linux.
